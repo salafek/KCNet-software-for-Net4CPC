@@ -13,7 +13,7 @@ In order to build the binaries from the sources you will need:
 Run MAKE-MS.SUB to compile the KCNet utilities.</br>
 Run KERMIT14.SUB to compile the KERMIT client.</br>
 
-# License
+# License notice
 © Copyright 2023 by susowa</br>
 There is no license for the project, but two conditions for reuse of hardware and software on the z80 side:
  - only for private use, no commercial use allowed
