@@ -1,0 +1,10 @@
+;************************************************************
+;	Kommando-Script FTP.COM  ( KCNet CP/M 2+ )
+;************************************************************
+
+OPEN ftp.barnyard.co.uk
+USER anonymous
+PASS guest
+CD cpm/
+DIR
+

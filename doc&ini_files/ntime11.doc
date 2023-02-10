@@ -1,0 +1,120 @@
+--------------------------------------------------------------------------------
+
+	     ### KCNet SNTP Client CP/M 2+ - Version 1.1 ###
+
+		### Copyright 2010 - 2012  by >susowa< ###
+
+--------------------------------------------------------------------------------
+
+
+	Description
+
+NTIME.COM was implemented on basis of RFC 4330, which describes the Simple
+Network Time Protocol Version 4 (SNTPv4). SNTP is a subset of the Network Time
+Protocol (NTP) used to synchronize computer clocks. SNTP allow operation in a
+simple, stateless remote-procedure call (RPC) mode with accuracy and reliability
+expectations similar to the UDP/TIME protocol described in RFC 868.
+
+The program requests the UTC (Universal Time Coordinated) time from a passed
+NTP-Server address, normalizes the UTC to CP/M time and converts it to the date
+and time of a local time zone.
+
+This local date and time is used to set the system clock of the following 
+CP/M-Systems automatically:
+
+- system time of KC85 MicroDOS systems (date is not managed)
+- date and time of ZSDOS/ZDDOS systems with BDOS function 99
+- date and time of CP/M Plus systems with BDOS function 104 (not tested)
+
+On other systems, the date and time are only displayed on the screen.
+
+
+	Usage
+		
+ntime [-h|v] [-fr] [+|-h] [+|-m] [NTP-Server ...]
+
+Parameter:
+
+	-h|v	- Show help or version and exit
+	-f	- Full Output
+	-r	- Random sequence of NTP-Server addresses
+
+      +|-h	- Time zone offset in hours to UTC (decimal)
+      +|-m	- Daylight Savings time offset in minutes (decimal)
+NTP-server	- up to 4 NTP server name(s) or IP-address(es)
+
+
+	Instructions
+
+NTIME.COM comes pre-configured for MET (Middle European Time), respectively CET
+(Central European Time). The program contains already 4 NTP server addresses
+from de.pool.ntp.org as presets. All preferences can be overwritten with
+command-line parameters:
+
+- use +|-h to select another time zone
+- use +|-m to take Daylight Savings Time (DST) into account
+- use other NTP server addresses in your LAN or in the Internet
+
+Attention: one ore more external address(es), turn off ALL internal addresses !
+
+The option -f gives detailed information about request and reply, the NTP server
+data and time calculation. Option -r activates the random selection of internal
+or external passed NTP server addresses, when the program starts or a request
+have to be repeated to another server.
+
+If NTP server addresses are specified in the internet, the KCNet Interface
+settings of the Gateway and DNS-Server must be valid and Internet access be
+granted.
+
+Here are some examples of the use of NTIME.COM:
+
+NTIME
+
+	KCNet in Germany, NTP internet server, currently MET 
+	(Middle European Time)
+
+
+NTIME +60
+
+	KCNet in Germany, NTP internet server, currently MEST 
+	(Middle European Summer Time)
+
+
+NTIME +0 +60 0.uk.pool.ntp.org 1.uk.pool.ntp.org 2.uk.pool.ntp.org
+
+	KCNet in United Kingdom, NTP internet server, currently BST
+	(British Summer Time)
+
+
+NTIME +3 192.168.0.1
+
+	KCNet in Moscow, NTP LAN server (192.168.0.1), currently MSK
+	(Moscow Standard Time)
+	
+According to the first two examples, NTIME does not take into account an active
+Daylight Savings time. During DST the corresponding offset has to be supplied in
+the command-line.
+
+It is easy, to customize the presets for Time Zone, DST and NTP server
+addresses. Edit the strings, respectively numbers in the source file NTIMExx.MAC
+at the following labels and translate the program again. If your Time Zone
+offset isn't in full hours, customize the program in this way.
+
+Time zone:
+
+T_ZSGN:	DB	'+'		;time offset sign
+T_ZOFS:	DB	0,0,00EH,010H	;time offset = 3600s (32Bit Net-Order)
+
+Daylight Savings Time:
+
+T_DSGN:	DB	'+'		;Daylight Savings time offset sign
+T_DOFS:	DB	0,0,0,0		;Daylight Savings time offset = 0s
+				;(32Bit Net-Order)
+
+NTP server addresses (zero terminated strings):
+
+NTP1:	DB	'0.de.pool.ntp.org',0
+NTP2:	DB	'1.de.pool.ntp.org',0
+NTP3:	DB	'2.de.pool.ntp.org',0
+NTP4:	DB	'3.de.pool.ntp.org',0
+

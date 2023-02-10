@@ -1,0 +1,8 @@
+The Net4CPC Ethernet interface is equipped with the W5100S controller.
+This controller doesn't provide a MAC Address.
+The first time you run NCFG it will generate a MAC address in the form DE:AD:BE:EF:xx:xx where xx:xx are two random bytes. 
+The generated MAC Address will then be saved in the file MACADDR.INI in plain text.
+You can edit the MACADDR.INI file shoud you need to change the interface's MAC Address.
+
+d_kef 2023
+ 

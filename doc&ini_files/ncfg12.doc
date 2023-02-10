@@ -1,0 +1,92 @@
+--------------------------------------------------------------------------------
+
+	###  KCNet Network Configuration CP/M 2+ - Version 1.2  ###
+
+		### Copyright 2008 - 2012  by >susowa< ###
+	
+--------------------------------------------------------------------------------
+
+
+	Description
+
+NCFG.COM is the configuration utility for the network configuration of a "KCNet"
+Interface for CP/M systems from version 2.x and higher. The program offers the
+following possibilities:
+	
+- view the current network configuration
+- apply predefined configurations from the file NCFG.INI
+- do automatically network configuration via DHCP or APIPA
+- do manually network configuration with passed parameters
+- reset the network interface in power-on state 
+
+
+	Usage
+		
+ncfg [[DIR|DU:]config name] [-h|v] [-rfq] [-a:hostname]
+  [-i:ip-address -m:subnet-mask] [-g:Gateway] [-d:DNS-server]
+
+Parameter:
+
+config name    - config name predefined in [DIR|DU:]NCFG.INI
+
+-h|v           - show help or version and exit
+
+-r             - reset network configuration
+-f             - full output
+-q             - quiet output
+
+-a:hostname    - auto configuration with DHCP or APIPA
+-i:ip-address  - ip-address manually dec. (d.d.d.d)
+-m:subnet-mask - subnet-mask manually dec. (d.d.d.d)
+-g:Gateway     - network Gateway manually dec. (d.d.d.d)
+-d:DNS-server  - DNS-server manually dec. (d.d.d.d)
+
+
+	Instructions
+
+Start the utility without options to show the current network configuration.
+
+Call it with '-' options in arbitrary order and combination:
+
+- to show the help or version of the program with options '-h' or '-v'
+- to reset the complete network configuration with option '-r'
+- to configure the interface automatically with option '-a:hostname'
+- to configure the interface manually with options '-i' and '-m'
+
+If the '-a'-Option is used, a 'hostname' for possibly registration with a
+local DNS-Server in your network is required. With the '-a' option NCFG.COM
+configures the network-settings with the help of the DHCP-Server. If no 
+DHCP-Server gives an answer, the program configures the network with "APIPA"
+in the network 169.254.x.x with subnetmask 255.255.0.0.
+
+The 'hostname' becomes your local DNS-Computername, if there is a working 
+DNS-Server in the local network, which takes over the hostnames from the
+DHCP-server leases. There are the following restrictions for a 'hostname':
+
+- only characters 'A-Z' (uppercase or lowercase), '0-9', '-' and '.' are
+  allowed
+- the '.' serves only as separator between labels of a domainname
+- the '-' is not allowed to be the first or last character of a label
+- the maximum length of a label is 63 and of the whole domainname 255
+  characters
+
+If you want configure the TCPIP-Stack manually use the options '-i' and '-m',
+these both options have to be used together!
+
+The options '-g' or '-d' can be used alone. In order to reach network 
+addresses outside the local network, the Gateway of the network (Router)
+must be declared.
+
+If you configure the network manually, the Gateway address is taken over for
+the DNS-server automatically, then can be left out the option '-d'.
+
+In order to make life easier, you can predefine any combination of the '-'
+options under an arbitrary unique name in the file NCFG.INI and start the
+program with that name as a parameter. See examples in the supplied sample file.
+
+It is also possible, to combine all these variants, such as options and one or
+more names, in the command line.
+
+If the program is used with NZCOM, instead of the DU: also a named directory can
+be passed.
+

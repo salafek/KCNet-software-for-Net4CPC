@@ -1,0 +1,10 @@
+;************************************************************
+;	Kommando-Script FTP.COM  ( KCNet CP/M 2+ )
+;************************************************************
+
+OPEN ftp.mccomber.ca
+USER anonymous
+PASS guest
+CD pub/cpm/mirrors/
+DIR
+

@@ -1,0 +1,876 @@
+--------------------------------------------------------------------------------
+
+	###     KCNet FTP Client for CP/M 2+ - Version 1.1     ###
+
+		### Copyright 2010 - 2012  by >susowa< ###
+	
+--------------------------------------------------------------------------------
+
+
+FTP.COM is a full featured CP/M Terminal Client for Network- and/or Internet-
+File transfers. 
+
+It implements the standard (F)ile (T)ransfer (P)rotocol in a CP/M Environment.
+It is a used, to copy a file from one host to another over a TCP/IP-based
+Network. FTP has been implemented on top of the Internet Transmission Control
+Protocol (TCP).
+
+
+	-------- Introduction ------------------------------------------
+
+RFC 959 describes the official specification of FTP. The CP/M Client supports
+all commands defined in this RFC, except SMNT, REIN, STOU, APPE, ALLO and REST.
+It is limited to the transfer of files in the data structure "file-structure",
+the transmission mode "stream-mode" and the data types "ASCII TYPE" and 
+"IMAGE TYPE" (binary).
+
+The program takes into account the suggested change to the behavior of FTP
+clients in RFC 1579. By default, data connections are set up by passive open
+from the FTP client to the FTP server, but active open is available too.
+
+In addition, FTP.COM implements various extensions of the FTP protocol:
+
+	- FEAT and OPTS (RFC 2389)
+	- LANG (RFC 2640)
+	- MDTM and SIZE (RFC 3659)
+	- MFMT and MFCT (draft-somers-ftp-mfxx-04).
+
+The CP/M program offers other standard features of common FTP programs too. It
+is able to record all actions on request into a log file and can be automated
+via FTP.COM command scripts.
+
+The user interface consists of a very powerful command line with 50 commands.
+The built-in help function shows the user short information for each command.
+Entered commands are completed on request automatically and remaining possible
+commands are displayed selectively, depending on the input. The command line
+has a built-in history function for browsing forward and backward through
+previously entered commands. The history can be stored in or loaded from an
+external file.
+
+All commands, which can be applied to multiple files, allow the selection of
+groups of files using the wildcard character "*" and/or "?". The program has an
+automatic 8.3 filename filter, which processes the directory contents from any
+FTP server automatically, according to the CP/M requirements.
+
+The built-in TYPE command prints the ASCII content of server files on the
+screen without storing locally. Existing local or server files can be skipped
+or overwritten automatically or interactively.
+
+By default, the program displays only error and short information messages to
+the operator. To illustrate the operation and for troubleshooting, an expanded
+output, plus a debug mode, can be enabled.
+
+
+	-------- Usage -------------------------------------------------
+
+ftp [-h|v] [-pilr] [-s:[DIR|DU:]FN[.FT]] [server[:port]]
+
+Parameter:
+ 
+	   -h|v - show help or version and exit
+  
+	     -p - Passive open OFF
+
+	     -i - Interactive prompting OFF
+	     -l - Local unique OFF
+	     -r - Remote unique OFF
+
+-s:DIR|DU:FN.FT - Script file with FTP-commands
+
+         server - FTP Server name or IP-address
+           port - FTP Server port (standard: 21)
+
+    HISTORY.FTP - loads automatically
+   AUTOEXEC.FTP - executes automatically (-s takes precedence)
+
+Parameters "-h" and "-v" show the above help and version information of FTP.COM.
+The parameter "-p" toggles from passive open (default) to active open for file
+transfers.
+
+With the help of the 3 parameters "-i", "-l" and "-r" it is possible to alter
+the very defensive behavior of FTP.COM in transferring files which exist on the
+destination site. By default, such files are skipped without prompting.
+
+Furthermore there is the parameter "-s". It takes an user-defined script file
+and starts the automatically execution of included FTP.COM commands. It is
+recommended to use the default file type "FTP" for all FTP.COM script files,
+to distinguish them from other (text) files. 
+
+When FTP.COM starts, it searches for two special files. A file with the name 
+HISTORY.FTP is loaded into the command history automatically. A file with the
+name AUTOEXEC.FTP is executed as default command script automatically. If one or
+both files do not exist, nothing happens.
+
+The parameter "-s" and/or a given server parameter prevent loading and executing
+of an existing AUTOEXEC.FTP file! 
+
+This file is primarily intended for an adjustment of the program to individual
+default settings, when it comes into the interactive command line. The second
+major application of AUTOEXEC.FTP is fully automatic repetitive file transfers
+of an entire user area, without having to think about parameters.
+
+
+	-------- Command line ------------------------------------------
+
+If FTP.COM is started without the "-s" parameter, the operator will be greeted
+with a Welcome message. Then you're in the interactive command line and can use
+the available FTP.COM commands (see below). The following control functions are
+available in the command line interface. The function mapping to a key on the
+keyboard is set in column 3 of the file KCNET.INC:
+
+ SHIFT+Cursor left (Ctrl+A) - Cursor to begin of line
+       Cursor left (Ctrl+H) - Cursor left one char
+      Cursor right (Ctrl+D) - Cursor right one char
+SHIFT+Cursor right (Ctrl+F) - Cursor to end of line
+
+     Tab character (Ctrl+I) - Complete command or show possible commands
+         Cursor up (Ctrl+E) - Scroll backward through command history
+       Cursor down (Ctrl+X) - Scroll forward through command history
+       
+            Delete (Ctrl+G) - Delete character under Cursor and shift left
+        Clear line (Ctrl+Y) - Clear command line
+         Backspace (Ctrl+_) - Delete character preceding Cursor and shift left
+	 
+             Break (Ctrl+C) - Abort execution of a running command script
+
+	     Enter (Ctrl+M) - Execute command or finish input of parameters
+
+Password input cannot be edited, only the Clear line function is allowed. The
+Tab character, Cursor up and Cursor down functions are not available during the
+input of parameters.
+
+Available commands depend on the program status. Many commands are available
+only when you are connected to a FTP server.
+
+During file transfers, the command line remains active. So, for example, the
+ABORT command can be sent to the server.
+
+Disallowed commands are acknowledged with an error message.
+
+
+	-------- File Transfers ----------------------------------------
+
+If you want to transfer data, you must first connect to a FTP server.
+Therefore, each session starts with the command OPEN, followed by the login
+sequence, where the user data must be entered. What information is requested, is
+determined by the server. The program guides the user through the process
+automatically. When entering the data, it may be necessary to respect upper and
+lower case, this is determined by the server too!
+
+After successful login, the directory content of the server is displayed with
+the DIR, NLIST or MDIR command. Data is transmitted using the commands GET or 
+MGET and PUT or MPUT. The CLOSE command closes the connection and ends the FTP
+session. In addition, there are many other commands, see list below.
+
+An important point for communication programs is the handling of forbidden
+characters in filenames. Here, the requirements of the CP/M file system and the
+FTP server file system has to be considered! Files, that use one of the
+following characters in their name, cannot be transferred with FTP.COM.
+
+Forbidden characters in filenames: .,:;=%|/\<>()[]{}
+
+The transfer of data is performed via a temporary file with the reserved name
+FTP$FILE.$$$ in both directions. It may not exist in the local or server file
+system, because it is overwritten by FTP.COM!
+
+Using this intermediate file, FTP.COM transfers data very securely. An already
+existing file is replaced only after the successful confirmation of the file
+transfer from the opposite side.
+
+The two commands MDIR and MGET filter all files, which do not have
+CP/M-compliant names. With GET, such files will still be transferred, the
+command will ask for a matching local name automatically and rename the file
+after transfer.
+
+There are several switches that control the behavior of FTP.COM, if files on
+the other side exist already. An active RUNIQUE or LUNIQUE leads to the 
+automatic skipping, even if PROMPT is enabled. If RUNIQUE or LUNIQUE are turned
+off and PROMPT is ON, the program asks interactively for each file. If all 3
+switches are OFF, all files are overwritten without prompting. 
+
+Caution - FTP.COM resets, before overwriting a file, all attributes. Therefore,
+RO or SYS are not an overwrite protection!
+
+If ASCII files are sent in binary mode, the EOF marker and all following bytes
+of the last disk sector are transmitted as well. This can be disabled with the
+switch EOF = ON. In this case, the program stops the transfer, when it sees an
+EOF character in the file, so that an exact copy of the ASCII file is sent.
+
+EOF switch must never be activated in case of non-ASCII files - it should always
+turned OFF immediately after use!
+
+For long-term unattended transfers, for example Backup of hard disk data, a
+protocol can be written into a local file automatically. Using appropriate
+script commands, this file can be saved on the server too, after the successful
+completion of the process.
+
+If you use the CD and LCD commands without parameters immediately before any
+transfer command in the script, you can see the source and destination directory
+of the transfer in the log file :-).
+
+
+	-------- Transmission of file date and time --------------------
+
+FTP.COM is able to transfer time and date stamps of files in both directions 
+automatically. This function assumes, of course, that one's CP/M system supports
+reading and writing of date and time stamps for files. The support is limited to
+systems, which use ZSDOS/ZDDOS as BDOS replacement.
+
+On the other hand, the uniform transmission of time and date information for
+files is still not officially fully implemented in the RFC's of the FTP
+protocol.
+
+With MDTM and the "modify" fact of MLST (both defined in RFC 3659), there are
+two raw-ftp-commands available for reading the last file modification time.
+FTP.COM requires the support of MDTM on the server-side. Then, the modification 
+time of server files is applied locally, after they are received.
+
+But for writing this information into server files, there is currently (2010) no
+official way. Therefore FTP.COM supports some of the usual (unofficial) methods:
+
+write Create Time:
+
+	MFCT YYYYMMDDhhmmss pathname
+
+write Modify Time (one of the following raw-commands in this order):
+
+	MFMT YYYYMMDDhhmmss pathname
+	SITE UTIME pathname YYYYMMDDhhmmss YYYYMMDDhhmmss YYYYMMDDhhmmss UTC
+	SITE UTIME YYYYMMDDhhmmss pathname
+
+Because the used CP/M file stamps do not support a second's field, the value of
+"ss" is always filled with 0 while sending and discarded while receiving. The
+stamp data is not altered or converted, as there is no localization under CP/M.
+
+As you can see, the detection and activation of date and time support depends
+on local and remote conditions. The whole process is handled by FTP.COM
+internally and cannot be influenced by the user. 
+
+The support is switched when the FTP login sequence has completed. If the
+necessary conditions are met, stamps are always transmitted. This can't be
+turned OFF.
+
+Use the STATUS command to show the support state, but this makes sense only if
+one is logged into an FTP server! The following two lines show the current
+support, which is switched ON or OFF separately for sending and receiving:
+
+	Recv File Date/Time : ON/OFF
+	Send File Date/Time : ON/OFF
+
+
+	-------- Automation with command scripts -----------------------
+
+A command script is a sequence of FTP.COM commands, which is located in a file.
+Every line may contain one command with parameters, if necessary. All
+commands listed below are permitted without exception.
+
+Lines with a space or semicolon in the first column are interpreted as comment
+lines. The content is displayed on the screen, but the text is ignored.
+
+It is recommended, to use the default file type "FTP" for such script files.
+The program uses it automatically and you never have to enter a file type
+itself.
+
+A command script is processed line by line from the script file, until the last
+line or a QUIT command. This command closes FTP.COM and stops the processing of
+the script. If a command script runs, almost all interactive stops and halts are
+deactivated, e.g. the paged output of long directories.
+
+With the help of the QUIT command, it is possible to use FTP.COM within CP/M
+submit files. If you start FTP.COM with the parameter "-s" and the script, place
+QUIT as the last command within the script, then the script closes FTP.COM 
+automatically and CP/M executes the next submit command.
+
+Recursive scripts are not possible, but two or more scripts can be 
+concatenated. If you use the SCRIPT command in scripts and specify a new file
+as parameter, then the running script is closed and the new script executed.
+Do not concatenate the same script file(s), this leads to a endless loop!
+
+As of version 1.1 a running script can be aborted by the user with CTRL+C. An
+abort is acknowledged by the program with two tones.
+
+FTP.COM helps you in designing scripts. Open a log file before the interactive
+input of command sequences for later scripts and use this log file as a draft
+for the script. Another easier and faster way is the use of the HSAVE command
+after entering. Subsequently edit the commands, parameters and their sequence
+with an external text editor until the script is ready for use.
+
+At the start of FTP.COM, you can use the scripting capability already. With the
+parameter "-s" any script file can be executed right away. If there is not given
+another script, a file with the default name AUTOEXEC.FTP is searched in the
+launch directory and executed automatically, if any. The "-s" parameter takes
+precedence over AUTOEXEC.FTP always!
+
+For a central management of script files outside of the local working directory 
+there is the variable "HOME". When FTP.COM is started from the CP/M command
+line, it saves the startup directory in "HOME". The command "LCD HOME" goes back
+into this directory automatically at any time. In this way it is possible, to
+write universal directory-independent scripts, which always refer to the startup
+directory.
+
+With the help of script files, you can fully automate FTP-transfers without User
+input. It is possible to supply the requested login data of an User account
+immediately following the OPEN command in the script, without comment lines in
+between, e.g.:
+
+	OPEN ftp.server.domain
+	USER username
+	PASS password
+	ACCT account
+
+Only the login data, that is necessary for the used account, must be specified.
+These data are not shown on the screen and don't appear in log files.
+
+It is highly recommended to test out scripts with dummy files in RAM disks or
+similar, before they are used for real transfers. Deleted and overwritten files
+without backup can't be restored!
+
+There are various tools in FTP.COM for monitoring, controlling and
+troubleshooting. If you want to do troubleshooting with your script, make use
+of the log function. Write the output of the STATUS command into the log file
+and turn on VERBOSE output for a detailed log. Use the commands LCD and CD
+without arguments for writing the local or remote working directory into the log
+file. The output of each directory command is recorded in the log file too. This
+makes life much easier. The debug mode is more useful, if you suspect trouble
+with the server implementation. Not all existing FTP servers work conform to RFC
+specifications. 
+
+Note case insensitive, when specifying a file or directory name of the server
+file system! This is a common mistake, when you communicate with FTP servers,
+which run on UNIX-related operating systems.
+
+
+	-------- Commands in alphabetical order ------------------------
+	
+Don't confuse the raw-ftp-commands and commands, described in this document.
+Here, the term "command" means a command of the program FTP.COM. These commands
+use one or concatenate multiple raw-ftp-commands in background, to realize a
+convenient program function for the user.
+
+	COMMAND ARGUMENTS
+
+If a command is entered along with argument in the same line, they are separated
+by exactly one space character.
+
+A command that requires an argument asks for it, when it was not entered.
+
+All commands with the addition "(opt. ARG)" within the help, don't ask, if no
+argument was entered, but you can enter an optional argument for additional
+features.
+
+	DIRECTORY LIMITATIONS
+
+There are two command groups which can handle only a limited number of DIR
+entries, due to RAM limitations of the available TPA. The following example
+limits refer to a CP/M system with about 50k TPA:
+
+local DIR with sorting:		LDIR, LERA, MPUT	450 entries
+remote DIR from server:		MDIR, MGET		900 entries
+
+If there is a problem with too much entries, then use file masks to reduce the 
+number of matching entries and start the same command several times with
+different masks.
+
+	FILE ACCESS (as of Version 1.1)
+
+If the program is used with NZCOM, instead of DU: also the named directories can
+be passed. The "public" file-access under ZSDOS/ZDDOS CP/M systems has been
+further refined. Depending on the task, the following settings are applied:
+
+       AUTOEXEC.FTP - is only found in the current (launch) directory
+ ALL data transfers - limited to the current FTP directory
+   read script file - "public"-files are found as under ZxDOS
+  read history file - "public"-files are found as under ZxDOS
+ write history file - "public" file-access is temporarily disabled 
+     write log file - "public" file-access is temporarily disabled 
+
+
+	ABORT
+	
+This command sends an abort request to the server. The abort handling lies in
+the responsibility of the server, the client has to wait for appropriate
+responses. 
+The server should abort any transfer of data, but this can be greatly delayed by
+the buffering of data in the systems of the participating transfer partners. It
+is even possible that initiated transfers are completely finished before the
+termination takes effect.
+The command can be called only if a connection to the FTP server is available
+and effective, if data is transferred, otherwise it has no effect. After it was
+entered, the command line is blocked until the termination of a data transfer
+is done.
+
+	ASCII		
+
+Sets the ASCII data type for all transfers. Caution - use this command only if
+the function and in particular the possible consequences for transferred files
+are clear. If you transfer non-ascii files as ASCII data type, they will be
+destroyed through the transfer most likely!
+The ASCII data type should be used for text files only, especially if you want
+to work directly with such files on other systems. The server adjusts then
+automatically, for example, the line breaks to or from the format of the server
+operating system. Therefore, this type of data ensures the proper viewing of
+content on different systems. You can find much more information about FTP data
+types in RFC 959, chapter "DATA TYPES".
+If you use FTP for backup, it is not necessary to save text files using the
+ASCII data type. The transfer as IMAGE data type is easier, faster and, after
+restoring backup data into the CP/M system, there are exactly the same files as
+before.
+
+	BINARY
+
+Sets the IMAGE data type for all transfers. This is the default and there is no
+reason to change this setting!
+The IMAGE data type is intended for the transfer of binary data. The content of
+transferred files is never modified. FTP.COM sends the last disk sector always
+complete, even if no valid data is available behind the logical end of a file.
+For sending of plain text files up to EOF only, look at command EOF. When
+receiving, the last disk sector is padded with EOF bytes (1AH), if necessary.
+
+	CD [PATH]
+
+This command changes the working directory on the FTP server. The argument has
+to be a valid remote directory, this depends on the server system. Use the DIR
+command in front of CD in order to see available sub-directories of the server.
+It may be necessary to respect upper and lower case. Without argument, the
+current working directory is displayed, see PWD.
+
+	CLOSE
+
+Requests the termination of an online session with the FTP server, which closes
+the connection. FTP.COM remains in its command line (offline).
+This command is useful too, if there are communication problems with the FTP
+server, because it resets the whole command state of the program.
+If you get no access to the server after entering the login data, you should
+also use CLOSE first and only then start a new attempt with OPEN.
+
+	CLS
+
+This command clears the local screen and sets the Cursor in HOME position.
+
+	DEBUG [ON|OFF]
+
+Sets the debug mode. Without argument, the current debug state is toggled. In
+debug mode, the program prints all requests sent to the server on the screen,
+preceded by the string "--> ". Additionally, the three digit number codes of
+the server replies are printed. 
+
+	DELETE [PATHNAME]
+
+Deletes one file on the FTP server. The argument has to be a valid file, this
+depends on the server system. It may be necessary to respect upper and lower
+case. If the file exists, it is immediately deleted, without further security
+questions.
+
+	DIR [PATH]
+
+This command causes a list to be sent from the FTP server to the client. If the
+argument specifies a directory or other (wild carded) groups of files, the
+server should transfer a list of files in the specified directory. If the path 
+specifies a file, then the server should send current information about the
+file. If no argument is passed, the FTP server implies the current working or
+default directory of the logged-in user. 
+Some FTP servers accept the statement of additional switches (-ra). Such 
+switches are used to control, for example, the alphabetical or reverse order of
+the list.
+The information on a file in the list is not standardized, it may vary widely
+from system to system.
+
+	EOF [ON|OFF]
+
+Sets the EOF-Stop for sending of local files. Without argument, the current
+state is toggled. Caution - use this command only if you want to send exact
+copies of plain text files.
+If you transfer other files with EOF activated, the transfer ends with the first
+occurrence of an EOF character and the file is not transferred completely!
+An activated EOF switch should always be turned OFF immediately after use, to 
+avoid the accidental incomplete transmission of files!
+
+	FEAT
+
+Prints the features of the remote server. The received information allows a
+client to discover which optional commands the server supports, and how they
+are supported.
+The feature negotiation mechanism is an extension of the File Transfer Protocol
+and was introduced officially in RFC 2389.
+
+	FSYS [ON|OFF]
+
+FSYS switches the inclusion of local system files for the commands LDIR, LERA
+and MPUT. Without argument, the current state is toggled.
+Although these files are no longer visible for FTP.COM in the OFF position,
+they are still in the local file system and, when using GET or MGET, just
+overwritten, like all other files!
+
+	GET [PATHNAME]
+
+Requests one file from the FTP server, ambiguous file names are not allowed.
+The argument has to be a valid file, this depends on the server system. It may
+be necessary to respect upper and lower case. 
+The received file is copied into the local working directory. Before using GET,
+LUNIQUE and PROMPT should be adjusted, because they determine how the command
+deals with locally existing files which have the same name.
+The command GET is the only way to transfer a file directly which does not have
+a CP/M-compliant fle name. If GET is started with such a file name, it asks for
+a matching local file name automatically and renames the file after transfer.
+
+	HELP [COMMAND]
+
+With this command, you have access to various help functions of FTP.COM. Without
+argument, the program lists all possible commands on screen.
+If you enter one of those commands as parameter, you will get a specific help
+for that command. You don't have to write the full command string, it has to be
+unique only, otherwise the help of the first found command is printed.
+With the last command "?" as parameter, all commands with their help are listed
+line by line and screen by screen.
+
+	HLOAD [DIR|DU:]FN[.FT]
+
+Loads a local (text) file into the command history of FTP.COM. At least a valid
+file name is required, wildcards are not allowed. If you omit [DIR|DU:], the
+local working directory is used. If you omit the file type [.FT], the default
+type "FTP" is used automatically.
+Every line of the file is separated into one history command from top to bottom.
+If you scroll back through the history, the first line comes up first. The
+current history of the program is replaced completely. Use HSAVE in front of
+HLOAD and compose your desired history commands within an external text editor.
+
+	HSAVE [DIR|DU:]FN[.FT]
+
+This command saves the current command history, beginning with the last command,
+into a local text file and treats arguments in the same way as HLOAD.
+The command overrides an existing history file only after confirmation, except
+if it is called from within a running script!
+
+	LANGUAGE [LANG-TAG]
+
+This command supports an extension of the FTP protocol which was introduced in
+RFC 2640. It allows a server to determine in which language to present server
+greetings and the textual part of command responses. 
+The parameter, associated with the LANGUAGE command, shall be one of the
+language tags defined in RFC 1766, e.g. "de" for German. If a LANGUAGE command
+without a parameter is issued, the server\92s default language will be used.
+
+	LCD [DIR|DU:]	LCD HOME
+
+This command changes the local working directory. All elements of the argument 
+(drive name or user number, colon) are optional and can be omitted, if not
+required. Without argument, the current working directory is displayed.
+The command "LCD HOME" is a special case. When FTP.COM is started from the CP/M
+command line, it saves the starting directory in the variable "HOME". This can
+be used in universal directory-independent scripts for going back into this
+directory automatically at any time.
+
+	LDIR [FN.FT]
+
+Shows the content of the local working directory. It is possible to exclude 
+system files permanently with the FSYS command.
+An optional argument can be used as a file mask combined with the wildcard
+characters "*" and "?". Without argument, all files are displayed.
+
+	LERA [FN.FT]
+
+With this command, you can erase one or more local file(s) in the local working
+directory. Groups of files are selected in the same way as with LDIR, but the
+argument is not optional. If none is specified, the command asks for one.
+If PROMPT is ON, each erasure have to be confirmed successively with "Y" or "N".
+Caution - if PROMPT is OFF, it is asked only once for a confirmation, after "Y"
+all files are erased!
+There is one exception, if LERA is used within scripts and PROMPT is OFF. The
+automatic erasing of files is limited to one file hit. If there are more files
+to erase, then the script is halted for one confirmation question. But it is not
+recommended to use the LERA command in script files.
+
+	LOG [DIR|DU:]FN[.FT]
+
+This command controls the recording of the most FTP.COM actions into a local
+text file in background.
+You have to specify an argument to start the logging. At least a valid file
+name is required, wildcards are not allowed. If you omit [DIR|DU:], the local
+working directory is used. If you omit the file type [.FT], the default type
+"LOG" is used automatically.
+If you call the command with no argument, the logging is stopped and the log
+file closed.
+The current log status is shown in the screen output of the command STATUS. If
+you start the command with an argument and a log file is already activated, the
+running log file is closed first and then the program tries to open the new
+one. The command overrides an existing log file only after confirmation, except
+if it is called from within a running script!
+
+	LUNIQUE [ON|OFF]
+
+Sets the store unique mode for local files. Without argument, the current state
+is toggled.
+If LUNIQUE is ON, then existing local files are not stored, they are just
+skipped.
+
+	MDIR [FN.FT]
+
+The usually quite useless MDIR command (DIR is doing almost the same) of other
+FTP programs is utilized in FTP.COM to form automatically a CP/M-compliant
+directory list of FTP server directory contents. The program sends in background
+a NLIST command to the FTP server and filters the following entries:
+- names with more than 11 characters are removed
+- names with spaces or .,:;=%|/\<>()[]{} are removed
+- if the transformation of names in upper case letters would create duplicate
+  entries, only one (derived from the first) name of the server list leads to
+  one entry in the CP/M list
+The result is a well-known CP/M directory listing with 8.3 file names, which is 
+displayed on the screen.
+An optional argument can be used as a file mask combined with the wildcard
+characters "*" and "?". This argument is normally interpreted by the FTP server 
+directly as a selector for groups of files. In this case, the CP/M filter
+applies only to the possibly reduced listing of the server.
+
+	MGET [FN.FT]
+
+MGET realizes a Multiple GET command for FTP server files. Because of the CP/M
+file system restrictions, only compliant file names can be stored directly.
+Therefore, the list from the server is received and filtered under the same
+rules as for MDIR silent in background, and the resulting files are transferred
+one by one.
+An argument is required, which is used as a file mask for the selection of the 
+server files. The common wildcard characters "*" and "?" can be used within the
+mask normally, this depends on the server system.
+Caution - the underlying NLIST command delivers file and directory names of the
+FTP server file system without distinction. This can result in unexpected
+effects! 
+E.g., directories cannot be received. The program reports in this case an
+error, but continues with the next name. 
+Existing subdirectories in the current working directory of the FTP server can
+lead into other problems, too. If MGET does not work in the expected way, you
+should inspect the output of MDIR (respectively of NLIST) with the same argument
+by yourself, to find the reason. 
+The received files are copied into the local working directory. Before using
+MGET, LUNIQUE and PROMPT should be adjusted, because they determine, how the
+command deals with locally existing files which have the same name.
+
+	MKDIR [PATH]
+
+This command creates a directory on the FTP server. The argument has to be a
+valid remote directory, this depends on the server system. It may be necessary
+to respect upper and lower case. Without argument, the program requests the
+input of a directory name.
+If you indicate an absolute PATH, the specified directory is created. If PATH is
+relative, a subdirectory of the current working directory on the FTP server is
+created.
+
+	MPUT [FN.FT]
+
+Sends multiple files from the local working directory to the current working
+directory on the FTP server.
+You have to supply an argument, which masks the local directory content. The 
+wildcard characters "*" and "?" are allowed. It is possible to exclude system
+files permanently with the FSYS command.
+Before using MPUT, RUNIQUE and PROMPT should be adjusted. They determine how
+the command deals with remote existing files, if they have the same name.
+
+	NLIST [PATH]
+
+NLIST works like DIR, but returns a stream of names of files and no other
+information. It is primarily intended for the automatic processing of files by
+a program.
+An optional PATH argument is treated in the same way as DIR. If no argument is
+passed, the FTP server implies the current working or default directory of the
+logged-in user. 
+Some FTP servers accept the statement of additional switches (-ra). Such 
+switches are used to control, for example, the alphabetical or reverse order of
+the list.
+
+	OPEN [SERVER[:PORT]]
+
+This command starts any FTP session with opening a connection to the FTP server,
+specified with its domain name or IP address. An optional decimal port number
+may be supplied, in which case the program will attempt to contact the server
+at that port. Without port number, the standard FTP port 21 is used.
+If the connection is established successfully, the automatic login sequence 
+follows, see command USER. 
+ 
+	OPTIONS [RAW-FTP-COMMAND RAW-FTP-COMMAND-OPTION]
+
+Specify the behavior of an indicated raw-ftp-command. This command allows a user
+to specify the desired behavior of the FTP server process, when the target 
+raw-ftp-command is later issued.
+The exact behavior and syntax, will vary with the target raw-ftp-command
+indicated, and will be specified with the definition of that raw-ftp-command.
+Where no OPTS behavior is defined for a particular raw-ftp-command, there are
+no options available for that raw-ftp-command.
+
+	PASSIVE [ON|OFF]
+
+This setting determines how the program sets up the appropriate ports for a
+data connection. By default, FTP.COM uses PASSIVE open for data connections,
+the suggested method for clients in RFC 1579 "Firewall-Friendly FTP".
+If you turn PASSIVE open OFF, the client tries ACTIVE open for the next data
+connection. Without argument, the current state is toggled.
+The FTP server is responsible for setting up data connections normally. Passive
+open means that the server stays passive and waits for a connection
+establishment through the client, which opens the connection on the pre-agreed
+port. With ACTIVE open the server opens active the data connection on the 
+previously submitted data port, which is always sent from FTP.COM.
+
+	PD
+
+This command is a special variant of CD. But it is not necessary, to specify a
+destination directory as argument. It always changes the remote working
+directory one level up to the "P"arent "D"irectory.
+
+	PROMPT [ON|OFF]
+
+Sets the interactive prompt mode for file actions. Without argument, the current
+state is toggled.
+By default PROMPT is ON, then existing files are overwritten or erased only
+after confirmation.
+During file transfers, this is a good protection against unintended replacing
+of existing files. On the other hand, the confirmation questions suspend the
+automatic script execution.
+
+	PUT [FN.FT]
+
+With this command, one file is sent to the FTP server. Ambiguous file names are
+not allowed. The argument has to be a valid file in the current local 
+directory, which is copied into the working directory on the FTP server.
+Before using PUT, RUNIQUE and PROMPT should be adjusted because they determine,
+how the command deals with remote existing files, if they have the same name.
+
+	PWD
+
+Prints the current working directory on the FTP server. This directory is always
+the source or destination of file transfers, if file names without path are used
+as command arguments of relevant commands.
+
+	QUIT
+	
+This command leaves FTP.COM to CP/M and implies the CLOSE command, if a
+FTP-Session is active. The command is blocked during the transmission of data.
+
+	QUOTE [RAW-FTP-COMMAND ...]
+
+The arguments specified are sent, verbatim, to the FTP server. This command is
+your Swiss Army Knife for the FTP protocol, because you can send any
+raw-ftp-command with any parameter, which does not need a data connection.
+
+	RENAME [PATHNAME]
+
+Renames one file on the FTP server. The argument has to be a valid file, this
+depends on the server system. It may be necessary to respect upper and lower
+case. 
+If you omit PATHNAME, the program requests the name of the file to be renamed
+with the prompt "From [Path]Name : ". Subsequently, it asks for the new name
+with " To [Path]Name : ". After entering the names, the renaming of the file
+on the FTP server is requested.
+
+	RHELP [RAW-FTP-COMMAND]
+
+Requests help from the FTP server. This command shall cause the server to send
+helpful information regarding its implementation status. The command may take an
+argument like a raw-ftp-command name and return more specific information as a
+response, e.g. RHELP SITE.
+
+	RMDIR [PATH]
+
+This command removes a directory on the FTP server. The argument has to be a
+valid remote directory, this depends on the server system. It may be necessary
+to respect upper and lower case. Without argument, the program requests the
+input of a directory name.
+If you indicate an absolute PATH, the specified directory is removed. If PATH is
+relative, a subdirectory of the current working directory on the FTP server is
+removed.
+
+	RSTAT [PATHNAME]
+
+This command causes a status response from the FTP server, sent over the control
+connection in the form of a reply message.
+The command accepts an optional argument. If the argument is a PATH, the command
+is analogous to the DIR command. If a partial PATH is given, the server may
+respond with a list of file names or attributes, associated with that
+specification.
+If no argument is given, the server should return general status information
+about the server FTP process. This should include current values of all transfer
+parameters and the status of connections.
+
+	RUNIQUE [ON|OFF]
+
+Sets the store unique mode for remote files on the FTP server. Without argument,
+the current state is toggled.
+If RUNIQUE is ON, then existing server files are not stored, they are just
+skipped.
+
+	SCRIPT [DIR|DU:]FN[.FT]
+
+Starts the automatic execution of FTP.COM commands, which are read from a local
+script file. It opens the given file, reads an entire line and passes it to the
+command interpreter of FTP.COM. The interpreter just tries to execute the
+content, as if a command had been entered directly via the command line.
+At least a valid file name is required, wildcards are not allowed. If you omit
+[DIR|DU:], the local working directory is used. If you omit the file type [.FT],
+the default type "FTP" is used automatically.
+
+	SITE [PARAMETER]
+
+In some cases, this command is used by FTP servers to provide services specific
+to their system. Such services may be essential for file transfers, but not
+sufficiently universal to be included as raw-command in the FTP protocol.
+The nature of these services and the specification of their syntax can be stated
+usually in a reply to the RHELP SITE command.
+
+	SIZE [PATHNAME]
+
+The SIZE command is used to obtain the transfer size of a file from the FTP
+server. The returned value is the exact number of bytes that would be 
+transmitted over the data connection, should that file be transmitted. 
+The argument has to be a valid file name, this depends on the server system. It
+may be necessary to respect upper and lower case.
+This value will change depending on the actual data transfer parameters, like
+structure, mode, and data type. Since FTP.COM never changes the parameters for
+structure (always "file-structure") and mode (always "stream-mode"), only the
+data type may be different, so the current setting is shown on screen in
+parentheses.
+
+	STATUS
+
+This command shows the current status of FTP.COM with following information: 
+- connection state
+- local HOME directory
+- state of all switches
+- activation of date and time stamp support
+- current data type
+- current open mode for data connections
+- log mode (and active log file).
+
+	SYSTEM
+
+Show the type of operating system running on the FTP server.
+
+	TYPE [PATHNAME]
+	
+Retrieves the given file from the FTP server and prints the content paged on
+the local screen directly without saving.
+The argument has to be a valid file, this depends on the server system. It may
+be necessary to respect upper and lower case. 
+This command was included for quick and easy reading of (short) text files,
+such as Readme.txt, Read.me, Dir.txt, *.dir. They are available in many FTP
+directories and contain a summary or description of the content.
+
+	USER [NAME]
+
+This command sends new user information to the FTP server and starts the 
+automatic login sequence, if NAME is accepted.
+There are FTP servers that support this command, if you are already connected
+and logged-in. But, in most cases, the CLOSE and OPEN commands have to be used
+in front of USER.
+
+	VERBOSE [ON|OFF]
+
+Sets the verbose output mode of the program. Without argument, the current state
+is toggled.
+In verbose mode, all replies from the FTP server are reported completely. In
+interaction with the activated debug mode, the user obtains a comprehensive 
+picture of the communication between FTP client and server, which is helpful for
+troubleshooting purposes.
+
+	?
+
+Displays a list of all possible program commands.
+
+--------------------------------------------------------------------------------
+

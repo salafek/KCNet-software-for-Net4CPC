@@ -1,0 +1,132 @@
+--------------------------------------------------------------------------------
+
+	###  KCNet PING Client & Server CP/M 2+ - Version 1.3  ###
+
+		### Copyright 2008 - 2012  by >susowa< ###
+	
+--------------------------------------------------------------------------------
+
+	Description
+
+PING.COM uses the ICMP protocol's mandatory ECHO_REQUEST datagram to elicit an 
+ICMP ECHO_RESPONSE from a host or gateway.
+
+ECHO_REQUEST datagrams or "Ping's" have an IP and ICMP header, followed by an 
+arbitrary number of 'pad'-bytes, used to fill out the packet.
+
+
+	Usage	
+		
+ping [-h|v] [-anq] [-c:count] [-i:interval] [-p:pattern]
+ [-s:packet-size] [-t:ttl] [-u:tos] [-w:timeout] destination
+
+Parameter (optional):
+
+-h|v            Show help or version and exit
+
+-a		Audible ping
+-n		Numeric output only. No attempt will be made to lookup
+		symbolic names for host addresses
+-q		Quiet output. Nothing is displayed except the summary lines
+		at startup time and when finished
+ 
+-c:count	Stop after sending count ECHO_REQUEST packets.
+-i:interval	Wait interval seconds between sending each packet. The 
+		default is to wait for one second between each packet.
+-p:pattern	You may specify up to 16 'pad'-bytes to fill out the packet
+		you send. This is useful for diagnosing data-dependent problems
+		in a network. For example, -p:ff will cause the sent packet to
+		be filled with all ones.
+-s:packetsize	Specifies the number of data bytes to be sent. The default is
+		56, which translates into 64 ICMP data bytes when combined with
+		the 8 bytes of ICMP header data. 
+-t:ttl		Set the IP Time to Live. 
+-u:tos		Set Quality of Service related bits in ICMP datagrams.
+		Traditionally (RFC1349), these have been interpreted as:
+		
+		0 for reserved, currently being redefined as congestion control
+		1-4 for Type of Service and 
+		5-7 for Precedence.
+		
+		Possible settings for Type of Service are: 
+		
+		minimal cost: 0x02, 
+		reliability: 0x04, 
+		throughput: 0x08, 
+		low delay: 0x10. 
+		
+		Multiple TOS bits should not be set simultaneously. Possible 
+		settings for special Precedence range from:
+		
+		priority (0x20) to net control (0xe0).
+		
+		In RFC2474, these fields has been redefined as 8-bit 
+		Differentiated Services (DS), consisting of: 
+		
+		bits 0-1 of separate data and 
+		bits 2-7 of Differentiated Services Codepoint (DSCP).
+		
+-w:timeout	Time to wait for a response, in seconds.
+
+Parameter (mandantory):
+
+destination     Domain-Name or IP address of the destination host or gateway
+
+
+	Instructions
+
+When using ping for fault isolation, it should first be run on a common host
+in the same network, to verify that the local network interface is up and
+running. 
+
+Then, hosts and gateways further and further away should be 'pinged'. Answer
+times and packet loss statistics are computed. If duplicate packets are
+received, they are not included in the packet loss calculation.
+
+When the specified number of packets have been sent (and received) or if the
+program is terminated with >ESC< / CTRL-C, a brief summary is displayed. 
+
+The current statistics can be obtained without termination of process with 
+the Key >ENTER<.
+
+
+	Duplicate and Damaged Packets
+
+Ping will report damaged packets. Damaged packets are obviously serious cause
+for alarm and often indicate broken hardware somewhere in the ping packet's 
+path (in the network or in the hosts).
+
+
+	Trying Different Data Patterns
+
+The (inter)network layer should never treat packets differently depending on 
+the data contained in the data portion. Unfortunately, data-dependent problems 
+have been known to sneak into networks and remain undetected for long periods 
+of time. In many cases the particular pattern that will have problems is 
+something that doesn't have sufficient 'transitions', such as all ones or all 
+zeros, or a pattern right at the edge, such as almost all zeros. It isn't 
+necessarily enough to specify a data pattern of all zeros (for example) on the 
+command line because the pattern that is of interest is at the data link level, 
+and the relationship between what you type and what the controllers transmit 
+can be complicated.
+
+This means that if you have a data-dependent problem you will probably have to 
+do a lot of testing to find it. If you are lucky, you may manage to find a file,
+that either can't be sent across your network or that takes much longer to 
+transfer than other similar length files. You can then examine this file for 
+repeated patterns, that you can test using the '-p' option of Ping.
+
+
+	TTL Details
+
+The TTL value of an IP packet represents the maximum number of IP routers, that 
+the packet can go through before being thrown away. In current practice you can 
+expect each router in the Internet to decrement the TTL field by exactly one.
+
+The TCP/IP specification states that the TTL field for TCP packets should be 
+set to 60, but many systems use smaller values (4.3 BSD uses 30, 4.2 used 15).
+
+The maximum possible value of this field is 255, and most Unix systems set the 
+TTL field of ICMP ECHO_REQUEST packets to 255. This is, why you will find you 
+can 'Ping' some hosts, but not reach them with Telnet or FTP.
+

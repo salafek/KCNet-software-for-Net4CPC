@@ -1,0 +1,106 @@
+--------------------------------------------------------------------------------
+
+	   ### KCNet WakeOnLan Client CP/M 2+ - Version 1.1 ###
+
+		### Copyright 2009 - 2012  by >susowa< ###
+
+--------------------------------------------------------------------------------
+
+
+	Description
+
+Wake-On-LAN allows a computer to be turned on or woken up by a network message
+platform-independent. The functional basis is the "Magic Packet Technology White
+Paper - Copyright 1998 by AMD".
+
+The program forms a so-called "Magic packet" with help of the targets computer
+MAC-address and sends an UDP-message to the Directed Broadcast Address of the
+local, respectively external network with destination-port 9 ("discard").
+
+If the target computer is able to recognize this WOL-packet, it should turn on
+and boot up.
+
+
+	Usage
+		
+wol [-h|v] [-f] [[DIR|DU:]name]|[destination-MAC [network/mask]]
+
+Parameter:
+
+   -h|v - Show help or version and exit
+     -f - Full Output
+
+   name - Destination name defined in [DIR|DU:]WOL.INI
+    MAC - ":"-delimited destination MAC address (hex.)
+network	- Network address, if MAC is not in local net (d.d.d.d)
+   mask - Subnet mask of the other network (d.d.d.d)
+
+
+	Instructions
+
+There are 3 possibilities to use the program in principle:
+
+1. Call the program and hand over the MAC-address of the target computer in the
+   command-line and optional its external network-address with subnet-mask, if
+   it is no participant of the local network.
+
+2. Call the program and hand over the computer name of the target computer in
+   the command-line. The necessary parameters of the computer have to be defined
+   in the file WOL.INI, see below. If the program can't find the name or correct
+   data, it continues automatically to the third variation.
+
+3. Call the program without parameter and select the target computer from the
+   presented account list. The listed accounts have to be defined in the file
+   WOL.INI, see below.
+
+All MAC-addresses and local/external network addresses are normally not visible,
+use option -f for complete output of all parameters.
+
+	WOL.INI:
+
+Target computer data can be defined in the text file WOL.INI, which must be
+placed in the same DU: as WOL.COM. If the program is used with NZCOM, instead of
+DU: also a named directory can be passed.
+
+In this file, an [Account] must be positioned for each computer, which contains
+the following example data:
+
+[Account]				- mandatory
+name=PC-WORK				- mandatory
+mac=00:60:97:01:02:03			- mandatory
+net=192.168.0.0/255.255.255.0		- optional
+
+There are the following restrictions:
+
+	common:
+
+- ";"- and SPC-lines are ignored, data lines begin in the first column
+- a data record begins with the keyword [Account]
+- parameter and value are separated by an equal sign
+- a data line contains no spaces or control-characters before or between data
+  characters
+
+	for a 'name':
+
+- only characters 'A-Z' (upper- or lowercase), '0-9' and '-' are allowed
+- the '-' should not be the first or last character of a name
+- the maximum length of a name is 15 characters
+
+	for a 'mac':
+
+- only hexadecimal characters are allowed, separated by a ":"
+
+	for a 'net':
+
+- only decimal digits are allowed
+- the network-address (or IP address) and subnet-mask must be defined in
+  dotted decimal format and separated by one slash
+
+The number of accounts is not limited. The program shows the account list page
+by page with 9 accounts per side on the screen. The order of the accounts is the
+order in the file from top to bottom.
+
+In order to reach a target computer outside the local network, the net of this
+computer must be declared and the router(s) must be configured to route directed
+broadcasts to other networks.
+

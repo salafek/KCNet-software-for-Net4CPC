@@ -1,0 +1,287 @@
+--------------------------------------------------------------------------------
+
+	   ###  KCNet RAW-TCP Print Client CP/M 2+ - Version 1.0  ###
+
+		   ### Copyright 2010 - 2016  by >susowa< ###
+
+--------------------------------------------------------------------------------
+
+
+	Description
+
+With this program you can send print data over a TCP/IP network to a so called
+print server from the CP/M commandline. You can think of a print server as a
+network card for a printer with additional functionality.
+
+It uses the proprietary JetDirect printing protocol also known as direct socket
+printing. This protocol was introduced by Hewlett-Packard 1991 with their
+internal print servers installed in HP printers that have a compatible
+input/output slot.
+
+The Print-Client can connect with JetDirect Print Servers on any port number
+between 1 and 65535 and send raw print data from files and optional printer
+codes from the commandline. 
+
+
+	Network protocol
+
+The program has been implemented on top of the Internet Transmission Control
+Protocol (TCP or Stream). In common with other Internet protocols, it passes 8
+bit bytes of data.
+
+HP JetDirect is the most simple protocol for network printing. The printer 
+server listens on port 9100 usually.
+To send a document, the client connects to the server on port 9100 and sends
+the raw document data - in a language the printer understands, i.e. ESC/P2 or
+PCL/PS!
+There is no queue management, so you can’t abort jobs, query the status of
+printer/ink/toner or anything like that.
+
+
+	Usage
+
+nprint [-h|v]|[-rg] server[:port] [<code> ...]|[[DIR|DU:]FN.FT ...]
+
+ Options:   -h|v - show help or version and exit
+ 
+              -r - reset bit 7 of printer file data
+              -g - german conversion of printer file data
+	      
+          server - Print-Server name or IP-address
+            port - RAW-TCP port (standard: 9100)
+	    
+    Data:          in any number and sequence
+    
+           FN.FT - printer file(s)
+	   
+          <code> - printer code(s)
+                    control char: e.g. ESC (see code list below)
+                      ASCII char: ! to ` (33 ... 96)
+                                  { to ~ (123 ... 126)
+                    decimal code: 2 or 3 digits (00 ... 255)
+
+If you use NZCOM, it is allowed to use named directories instead of the usual
+drive/user specification of CP/M.
+
+The order of the options is not arbitrary. First the desired "-" parameters and
+then the server and optional port have to be specified, followed by any print
+data.
+
+
+	File data
+
+As the name suggests, the program can send print data from a file to the print
+server. Such a file can be printed with wordstar by redirecting the printer
+output to a file. You need a proper printer installation of wordstar for the
+networked printer. During printing to a file the dot commands of wordstar are
+converted to the printer codes of the installed printer, i.e. ESC/P2.
+
+The print files of wordstar use the eighth bit of a character code for internal
+purposes. Because CP/M (upto version 2.x) and old printers use only 7 bit for
+character encoding, this wasn't a problem during this time.
+Modern printers do normally support 8 bit character sets only. If wordstar sets
+the eighth bit of sign code internally, a modern printer prints a false sign
+from its 8 bit character set.
+
+Formerly the support of national symbols was implemented with the help of
+national variants of ISO/IEC 646 with 7 bit character encoding.
+Modern printers do no more support such character sets. The old national
+character code of ISO/IEC 646 has to be converted to the 8 bit character code
+of the supported character set of a modern printer. Mostly code page 437 is
+supported, used by IBM PC and MS-DOS, also known as US DOS or OEM-US.
+
+The print client can solve both of the above problems by using the following
+options.
+
+	Option -r (reset bit 7 of printer file data)
+
+With this option the Print-Client reads a byte from a given print file and sets
+bit 7 to 0 before sending the byte to the print server.
+This allows the correct character output of wordstar text files on modern
+printers with 8 bit IBM-PC OEM charset.
+
+	Option -g (german conversion of printer file data)
+
+With the help of this option the Print-Client reads a byte from a given print
+file and takes a code conversion according to the following table:
+	
+	ISO 646-IRV			IBM-PC CP437 (German)
+
+	[	91 	05BH		Ä	142	08EH
+	\	92 	05CH		Ö	153	099H
+	]	93 	05DH		Ü	154	09AH
+	{	123 	07BH		ä	132	084H
+	|	124 	07CH		ö	148	094H
+	}	125 	07DH		ü	129	081H
+	~	126 	07EH		ß	225	0E1H
+
+This allows the printing of german umlauts of wordstar text files using the 7
+bit ascii charset of the german variant of ISO 646. All umlauts are converted to
+their equivalent of the 8 bit IBM-PC OEM charset.
+
+
+	Code data
+
+In addition to file data, the program can send so-called Code data to the print
+server. The main purpose of Code data is to send control or non-printing
+characters to the print server easily.
+Code data are entered byte by byte in the commandline directly. This can be 
+done in front of, between or after file data.
+There are three different input options to send Code data to the printer, which
+are described below.
+
+	Control character:
+	
+A control character is a text description consisting of two or more letters. The
+text in column "code" must be entered, the decimal value is sent.
+
+	code	decimal    description
+		value
+
+	NUL	0	   Null character
+	SOH	1	   Start of heading
+	STX	2	   Start of text
+	ETX	3	   End of text
+	EOT	4	   End of transmission
+	ENQ	5	   Enquiry
+	ACK	6	   Acknowledgment
+	BEL	7	   Audible bell
+	BS	8	   Backspace
+	HT	9	   Horizontal tab
+	LF	10	   Line feed
+	VT	11	   Vertical tab
+	FF	12	   Form feed
+	CR	13	   Carriage return
+	SO	14	   Shift out
+	SI	15	   Shift in
+	DLE	16	   Data link escape
+	DC1	17	   Device control 1
+	DC2	18	   Device control 2
+	DC3	19	   Device control 3
+	DC4	20	   Device control 4
+	NAK	21	   Negative acknowledgment
+	SYN	22	   Synchronous idle
+	ETB	23	   End of transmission block
+	CAN	24	   Cancel
+	EM	25	   End of medium
+	SUB	26	   Substitute character
+	ESC	27	   Escape
+	FS	28	   File separator
+	GS	29	   Group separator
+	RS	30	   Record separator
+	US	31	   Unit separator
+	SP	32	   White space
+	DEL	127	   Delete
+
+	ASCII character:
+
+These are all printable ASCII signs, which can be entered as one letter in the
+CP/M commandline directly. A letter will cause the sending of the corresponding
+code in column decimal value.
+
+	code		decimal value
+
+	! to `		33 to 96
+	{ to ~		123 to 126
+
+Because CP/M converts all entered lowercase letters to uppercase letters in the 
+commandline you cannot send the corresponding values. To send a value of a
+lowercase letter enter the corresponding decimal code 97-122 directly.
+
+	Decimal code:
+
+A decimal code must always be entered with at least 2 digits! An entered Decimal
+code is sent unchanged to the printer.
+With the help of a Decimal code it is possible to send a lowercase letter value
+from the CP/M commandline, see also ASCII character. 
+
+
+	Print servers
+
+A print server, or printer server, is a network device that connects printers to
+client computers over a network. It accepts print jobs sent from the client
+computers and sends the data to the attached printer(s).
+
+Print servers may support a variety of industry-standard or proprietary printing
+protocols like Internet Printing Protocol, Line Printer Daemon protocol, CUPS,
+SMB or CIFS protocol.
+
+NPRINT requires a print server, which supports the proprietary Jetdirect or
+direct socket printing protocol. All other network printing protocols are not
+supported.
+
+A print server can be provided by software, hardware or a combination of both.
+Some common variants of print servers are described briefly below.
+
+	internal
+
+A printer may have a built-in print server. The known HP JetDirect card is an
+optional printer accessory, that allows a printer to be accessed through a
+network, rather than via a direct connection. Printers with network port are 
+similar solutions for internal print servers.
+
+	external
+
+Alternatively a print server may be a dedicated device in a separate housing on
+the network with connections to the LAN and one or more printers. 
+The most famous examples are HP JetDirect external print servers, which connect
+printers to the network by adapting the printer’s parallel port to a network
+port. Depending on the model, HP JetDirect external print servers can connect
+up to three printers to a network.
+Today external print servers from many different manufacturers are available.
+There are models with wired or wireless network connection and for the
+connection of printers with serial, parallel or USB interface.
+
+	router
+
+A Jetdirect print server can be implemented by additional software in routers
+for home networks. The printer is attached to the router mostly at an USB port
+of the router. The router software listens on port 9100 and passes everything it
+receives to the USB printer.
+
+	software
+
+A print server may be a networked computer with one or more shared printers. A
+suitable Jetdirect print server in software can be found at:
+   https://sourceforge.net/projects/rawprintserver/
+With this software you can print to installed windows printers per Jetdirect
+protocol. It works only with existing, not with redirected virtual printers.
+
+
+	NPRINT application example
+
+The NPRINT computer is online in an ordinary home network. 
+
+There is a network printer "Epson Stylus SX510W" available, which is connected
+with the network by WLAN. The "Epson Stylus SX510W" implements a JetDirect print
+server, which listens on port 9100 for printjobs.
+
+This WLAN network printer has the IP 192.168.0.100 and the DNS-Name "SX".
+
+The network printer is compatible with the printer language ESC/P, which was set
+for the printer during the installation of wordstar.
+
+The german wordstar file EP4041CP.TXT is printed with the print command of
+Wordstar 3. After answering the second query with "Yes" the name EP4041CP.PRN is
+entered and this print file is written to disc.
+
+Subsequently, the PRN-file will be printed with the following command on the
+network printer "Epson Stylus SX510W": 
+
+NPRINT -rg SX EP4041CP.PRN FF
+
+Explanation of parameters:
+
+          -r  -  resets bit 7 of all wordstar file data
+          -g  -  converts german printer file data to the IBM-PC OEM charset,
+                 which is used by the network printer in text mode
+          SX  -  the DNS-name of the printer in the home network
+EP4041CP.PRN  -  printer file data
+          FF  -  control character for "Form feed" after printing file data
+
+Alternative command without DNS in the home network:
+
+NPRINT -rg 192.168.0.100 EP4041CP.PRN FF
+
+--------------------------------------------------------------------------------
+

@@ -1,0 +1,10 @@
+;************************************************************
+;	Kommando-Script FTP.COM  ( KCNet CP/M 2+ )
+;************************************************************
+
+OPEN bitsavers.informatik.uni-stuttgart.de
+USER anonymous
+PASS guest
+
+MDIR
+

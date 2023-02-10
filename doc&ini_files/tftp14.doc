@@ -1,0 +1,149 @@
+--------------------------------------------------------------------------------
+
+	###  KCNet TFTP Client & Server CP/M 2+ - Version 1.4  ###
+
+		### Copyright 2008 - 2012  by >susowa< ###
+	
+--------------------------------------------------------------------------------
+
+
+	Description
+	
+TFTP is a simple protocol to transfer files, and therefore was named the Trivial
+File Transfer Protocol or TFTP. It has been implemented on top of the Internet
+User Datagram protocol (UDP or Datagram). 
+
+TFTP lacks most of the features of a regular FTP. The only thing it can do, is
+read and write files from/to a remote server. It cannot list directories and
+currently has no provisions for user authentication. In common with other
+Internet protocols, it passes 8 bit bytes of data.
+
+This CP/M program implements the RFC 1350 "TFTP Revision 2" from July 1992. It
+works exclusively in "octet mode" with raw 8 bit bytes. The "netascii mode" and
+obsolete "mail mode" are not supported.
+
+The built-in TFTP-Server can run on any port number between 1 and 65535 and
+carry out data transfers.
+
+The TFTP-Client functions can connect with TFTP-Servers on any port number 
+between 1 and 65535 and read or write data.
+
+    
+	Usage (from command line)
+
+Server Menu:	tftp [-h|v] serve [DU|DIR[:port]] [host[:port]]
+
+   Get File:	tftp [-h|v] get host[:port] local [remote]
+Put File[s]:	tftp [-h|v] put host[:port] local[s] [remote]
+
+Parameter:
+
+-h|v	 - Show help or version and exit
+
+serve 	 - Start Server-Menu
+get	 - Get local file from remote Host
+put	 - Put local file[s] to remote Host
+
+DU|DIR	 - Drive/User or named directory (with NZCOM) to serve
+port	 - Server port (standard: 69)
+host	 - Remote Host (Domain-Name or IP address)
+
+local[s] - local filename or [ambiguous specification]
+remote   - remote [Path][Filename] or [Path]
+
+
+	File Transfers
+
+All running transfers are shown on screen with information about the requester
+and progress (RRQ=read request / WRQ=write request).
+
+If errors occur during a transfer the program generates an error message and
+three output tones.
+
+Successfully transfers are closed with a OK-Message and one tone.
+
+The TFTP program does not overwrite existing local files - delete local files
+under CP/M before a renewed transfer!
+
+If you use NZCOM, it is allowed to use named directories instead of the usual
+drive/user specification of CP/M.
+
+
+	Server Menu
+				
+To serve local files in the network, start the TFTP-Server with the 'serve'-
+keyword (at least 1 letter necessary). Without other parameters the server
+starts to serve A0: always. 
+
+If you specify only a drive with D or an user area with U, the server uses this
+given parameter combined with the current user or drive. If you specify another
+directory with DU or named directory with DIR (only possible with NZCOM), the
+server starts with this passed directory.
+
+An attached ':port' is used with the local TFTP-Server for listening incoming
+transfer requests from the network.
+
+The last optional parameter 'host:port' specifies the remote host and port for
+the client-functions, which can also be used from the Server-Menu. If ':port' is
+omitted, the default port 69 is used automatically.
+
+If the 'serve'-command is detected, the server menu and the built-in TFTP-Server
+are started. From this point network participants can read or write files from /
+to the server directory with a TFTP client program.
+
+>ESC< or >CTRL+C< closes the TFTP Server-Menu, the local TFTP-Server and returns
+to CP/M. While the menu is running, the following functions are available:
+
+>T< - set Transfer-Timeout for the interruption of dead transfers
+>Y< - include/exclude SYS-Files in directories and file specifications
+>H< - set the Domain-Name or IP address and an optional non-standard port number
+      of the remote Host for the TFTP client functions
+>F< - set the name for an optional remote-subfolder (folder must exist on the
+      remote server and must be write-enabled for clients)
+
+>C< - set the directory for client transfers (Get and Put transfers)
+>D< - show the content of the current client directory
+>G< - client request to a remote host for reading a remote file to local
+>P< - client request to a remote host for writing local file(s) to remote
+
+>S< - set the directory for server transfers
+>L< - show the content of the current server directory
+>N< - switch the local TFTP-Server ON/OFF (Server menu remains open)
+>O< - set the listen port of the local TFTP-Server
+
+Under '### Transfers: local IP address ###' all transfer information is shown
+and input transacted. Before a client function can be called in the Server menu,
+a remote host must be specified. Content of directories can be limited with the
+help of a mask.
+
+Transfers and functions are handled in parallel, therefore all available
+functions can run anytime. The following restrictions exist:
+
+- >ESC< or >CTRL+C< is blocked during transfers
+- only one multiple-transfer with filename specification is allowed
+- the "KCNet" interface can do at most 3 transfers simultaneous
+- transfers in Server menu cannot be broken off
+
+Besides >N< and >Y< all functions require input from the user and during this
+time running transfers are not served. If the input time reaches or crosses the
+Transfer-Timeout all running transfers are interrupted!
+
+
+	Client (from command line)
+
+The TFTP client functions are also usable without Server menu. Then, TFTP.COM
+has to be started with one of the keywords GET or PUT (at least 1 letter
+necessary), afterwards the remote host and the name for/of a local file.
+
+The GET function can request the reading of one remote file from the remote host
+to a local file. The put function can request the writing of one local file on
+the remote host to a remote file. In these two cases it is possible to use
+different names for local and remote file.
+
+If the put function is used with a local filename specification, the remote
+names remain the same, but it is possible to use an existing and write-enabled
+subfolder name on the remote host for the remote parameter.
+
+The client transfer of multiple files from the command line can be broken off
+anytime with >ESC< or >CTRL+C<.
+
