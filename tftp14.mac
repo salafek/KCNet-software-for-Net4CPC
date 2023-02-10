@@ -1,0 +1,3155 @@
+;*******************************************************
+;
+;	     TFTP Client & Server CP/M 2+
+;
+;		###     KCNET     ###
+;		 WIZnet TCP/IP-Stack 
+;		###  susowa 2008  ###
+;
+;  Name		: TFTPxx.MAC
+;  Date		: 08.03.2009
+;  Modified	: 01.03.2012
+;		: 21.11.2022 d_kef
+;  Hardware	: Net4CPC - W5100S
+;
+;  extern       : SYSLIB.REL
+;
+;  Includes:
+;     KCNET.INC - Configuration
+;   N4C-W51.INC - Interface driver Net4CPC W5100S
+;  W5100-12.INC - TCP/IP and Socket driver
+;   DNSC-10.INC - DNS client
+;
+;*******************************************************
+
+;*** VERSION *******************************************
+V_MAJOR	EQU	1
+V_MINOR	EQU	4
+;*** MACROS ********************************************
+NO	EQU	0
+YES	EQU	NOT NO
+	;
+PRMSG   MACRO   MSG,N       
+	.PRINTX *MSG,N*
+	ENDM
+	;
+INLINE  MACRO
+	CALL	INLINE## ;Input
+	ENDM	
+;*** common Equations **********************************
+	;destination
+        .PHASE  00100H
+	;CPU
+	.Z80
+	;CP/M 2+ constants
+BDOS	EQU	5
+DMA     EQU	80H
+	;BDOS
+WBOOT	EQU	0		;warm boot
+CPMVER	EQU	12		;get CP/M-Version
+STBEMD	EQU	45		;set BDOS error-mode
+CPMEXV	EQU	48		;get extended Version
+GTCFLG	EQU	100		;get ZSDOS/ZDDOS flags
+STCFLG	EQU	101		;set ZSDOS/ZDDOS flags
+;*******************************************************
+
+;*** Start of Code *************************************
+	;start address
+	JP	BEGIN
+	;ZCPR
+	DB	'Z3ENV'
+	DB	1		;type 1
+Z3EPTR:	DW	0		;pointer
+	;"KCNet" files
+	INCLUDE	KCNET.INC	;config file
+;
+	CKMAC	EQU	NO
+	INCLUDE	N4C-W51.INC	;Net4CPC - W5100S routines
+;
+	INCLUDE	W5100-12.INC	;TCP/IP+Socket-Driver
+;
+	INCLUDE	DNSC-11.INC	;DNS-Client
+;
+	;first address main
+AAMAIN	EQU	$
+;*******************************************************
+
+;### TFTP PROTOCOL DEFINITIONS #########################
+TFBLSZ	EQU	512		;Standard-Blocksize
+;------ TFTP DATA-Socket-Structure (IY) ----------------
+;  Sender: sends Data- or Ack-Packet from structure
+;	   sends Error-Packet from LINEBF like Server
+;Receiver: gets Data- or Ack-Packet in LINEBF
+	;Socket
+F_SCKD	EQU	0		;DATA-Socket Nr. (Handle)
+F_STAT	EQU	F_SCKD+1	;Socket-State
+	;7 = 1 - Client-Init Error
+	;6 = 1 - 'spec' DATA-Socket
+	;5 = 1 - DATA-Transfer Error
+	;4 = 1 - DATA-Transfer finished OK
+	;0 = 1 - Copy TID from RECV to SEND
+F_LTIO	EQU	F_STAT+1	;Timer last Transfer Info
+F_LSZC	EQU	F_LTIO+2	;Counter kB Transfer Info
+F_MTXT	EQU	F_LSZC+2	;address TInfo-MSG Header
+F_EMSG	EQU	F_MTXT+2	;address ERR-Message
+	;Sender
+F_PEER	EQU	F_EMSG+2	;IP-address
+F_PORT	EQU	F_PEER+4	;Port
+F_SPLG	EQU	F_PORT+2	;Size last sent-packet HOrder
+F_TIME	EQU	F_SPLG+2	;Timer last data-processing
+F_TRPT	EQU	F_TIME+2	;Timer last send-repeat
+	;Receiver
+FRPEER	EQU	F_TRPT+2	;IP-address
+FRPORT	EQU	FRPEER+4	;Port
+FRNSIZ	EQU	FRPORT+2	;DataSize NOrder
+FRHSIZ	EQU	FRNSIZ+2	;DataSize HOrder
+FRPTYP	EQU	FRHSIZ+2	;expected Packet-Type NOrder
+FRBNUM	EQU	FRPTYP+2	;expected Block-Number NOrder
+	;local File-Data
+F_USER	EQU	FRBNUM+2	;User Area
+F_DRIV	EQU	F_USER+1	;Drive
+F_FCB	EQU	F_DRIV+1	;FCB
+	;Packet-Data
+F_DATA	EQU	F_FCB+36	;sender-packet, max. length:
+				;Opcode+Blocknumber+Blocksize 
+	;Host-Name
+F_NAME	EQU	F_DATA+2+2+TFBLSZ ;string+0
+F_SCKE	EQU	F_NAME+256	;structure-end+1
+	;
+FSCKLG	EQU	F_SCKE-F_SCKD	;structure length
+;#######################################################
+
+;*** Work RAM ******************************************
+BSSTAM:	DB	0		;screen state (KC85)
+SYSVER:	DB	0		;CP/M-Version
+EXTVER:	DB	0		;extended CP/M-Version
+EXTCFG:	DW	0		;SYS-Config ZSDOS/ZDDOS
+	;TFTP Packet-Codes
+TF_RRQ:	DB	0,1		;Read request
+TF_WRQ:	DB	0,2		;Write request
+TF_DAT:	DB	0,3		;Data
+TF_ACK:	DB	0,4		;Acknowledgment
+TF_ERR:	DB	0,5		;Error
+TF_OACK: DB	0,6		;Option ACK (not used)
+	;TFTP Error Strings
+XE_NDEF: DB	0		;not defined, string follows
+XE_FLNF: DB	'File not found',CLEL,0
+XE_ACVL: DB	'Access violation',CLEL,0
+XE_DSKF: DB	'Disk full or allocation exceeded',CLEL,0
+XE_ILOP: DB	'Illegal TFTP operation',CLEL,0
+XE_UKID: DB	'Unknown transfer ID',CLEL,0
+XE_FLEX: DB	'File already exists',CLEL,0
+XE_NSUS: DB	'No such user',CLEL,0
+XE_TRTM: DB	'Transfer terminated',CLEL,0
+	;TFTP ADR-TABLE Error-Strings
+XE_TAB:	DW	XE_NDEF	
+	DW	XE_FLNF	
+	DW	XE_ACVL	
+	DW	XE_DSKF	
+	DW	XE_ILOP	
+	DW	XE_UKID	
+	DW	XE_FLEX	
+	DW	XE_NSUS	
+	DW	XE_TRTM
+XE_TLG	EQU	$-XE_TAB
+	;TRANSFER Error-Messages
+	;from Client to CON:
+XE_CM1:	DB	'Input-Error local filename!','$'
+XE_CM2:	DB	'DU|DIR: and <>.,:;=[]%|(){}/\ not allowed!','$'
+XE_CM3:	DB	'Invalid filename!','$'
+XE_CM4:	DB	'Host offline!','$'
+XE_CM5:	DB	'TPA overflow!','$'
+XE_CM6:	DB	'No matching files found!','$'
+XE_CM7:	DB	'Multiple transfer in progress!','$'
+XE_CM8:	DB	'Ambiguous filenames not allowed!','$'
+XE_CM9: DB	'Cannot open local file!','$'
+XE_CMA: DB	'Disk full or allocation exceeded!','$'
+XE_CMB: DB	'File already exists!','$'
+XE_CMC:	DB	'Invalid remote parameter!','$'
+XE_CMD:	DB	'Invalid remote filename: \/:*?"<>| not allowed!','$'
+	;from Server to RQ-Peer in ERR-Packet
+XE_SM1:	DB	'Invalid filename (use 8.3, DU|DIR: and <>.,:;=[]%|(){}/\ not allowed)!',0
+XE_SM2:	DB	'Octet mode required!',0
+	;Mode-String
+F_MODS:	DB	'OCTET',0		;for compare
+F_MSLG	EQU	$-F_MODS		;length
+	;TFTP-State (IX)
+TFSTAT:	DB	0
+	;7 = 1 - local Server OFF
+	;6 = 1 - Transfers in progress
+	;5 = 1 - update Server-Menu
+	;4 = 0 - Client Commandline / = 1 Server Menu
+	;3 = 0 - get Command / = 1 - put Command
+	;2 = 1 - Keyword not found
+	;1 = 1 - Show Version ON
+	;0 = 1 - Show Help ON / temp: rd(0)/wr(1) RQ/DATA-UP'S
+	;Server Data
+F_SCK:	DB	0		;Server-Socket Handle
+TFTPPT:	DB	0,69		;local Server Port
+FSRVIP:	DB	0,0,0,0		;RECVFR IP-address
+FSRVPT:	DB	0,0		;RECVFR Port
+FSRVDS:	DB	0,0		;RECVFR Size NOrder
+FHSVDS:	DB	0,0		;RECVFR Size HOrder
+	;Client Data
+HOSTIP:	DB	0,0,0,0		;Remote Server IP
+HOSTPT:	DB	0,69		;Remote Server Port
+	;DATA-Sockets
+ANZSCK:	DB	0		;number of available DATA-Sockets
+ADDSCK:	DW	0		;address of first DATA-Socket-Structure
+ACTSCK:	DB	0		;Down-Counter Data-Sockets
+AADSCK:	DW	0		;address of current DATA-Socket-Structure
+F_WRPT:	DW	5000		;Packet-Repeat ms
+	;'spec'-Transfer Data
+SPCKEY:	DB	0		;'R': starts next 'spec' and Source-Switch
+SPCDPT:	DW	0		;old PTR FMDIRB
+SPCHIP:	DB	0,0,0,0,0,0	;'spec' Host-IP+Port
+SPCHNM:	DS	256,0		;'spec' Hostname
+SPCTUS:	DB	0		;'spec' User
+SPCTDR:	DB	0		;'spec' Drive
+SPCPTR:	DW	0		;F.T Pointer
+SPCCNT:	DW	0		;F.T Counter
+SPCNAM:	DS	8+1+3+1,0	;expanded 'spec'-string
+SPCFCB:	DS	12,0		;Select-FCB for DIRQ
+	;Menu-Data
+DSMCNT:	DB	0		;Counter CON: Lines
+F_TMO:	DW	5000		;Transfer-Timeout ms  ************************* was 50000
+F_SYSF:	DB	11000000B	;System-Files on/off
+FUROOT:	DB	0		;TFTP Server Root User (U=0)
+FDROOT:	DB	0		;TFTP Server Root Drive (D=A)
+FUCLNT:	DB	0		;TFTP Client Files User
+FDCLNT:	DB	0		;TFTP Client Files Drive
+FSPORT:	DW	69		;local TFTP-Server Port
+FCPORT:	DW	69		;remote TFTP-Server Port
+LOCNET:	DS	8,0		;local IP and net mask (bin.)
+	;Buffer Packet-Filename
+PCKNAM:	DS	8+1+3+1,0	;expanded string
+	;Buffer Local Filename
+LCFNBF:	DS	12+1,0		;FN.FT+0 saved from commandline
+	;Buffer-PTR for Remote-(Path+)Name Buffer
+RMFNBF:	DW	0		;max. length 256 Bytes
+	;Buffer-PTR for HOST-Name Buffer
+TDMNBF:	DW	0		;max. length 256 Bytes
+	;Buffer-PTR for DNS Domain-Name Buffer
+DMNBUF:	DW	0		;max. length 256 Bytes
+	;Buffer-PTR for TFTP-Server Packet Buffer
+LINEBF:	DW	0		;max. length = MAXMTU
+	;Buffer-PTR for DIR- and INPUT-Buffer
+FMDIRB:	DW	0		;remaining memory up to CCP-1
+	;Table for ARGV## - addresses
+ARGMAX:	DB	9		;max. 9 Arguments
+ARGN:	DB	0		;Number of Arguments found
+TARG1:	DW	0		;ADR ARG1
+TARG2:	DW	0		;ADR ARG2
+TARG3:	DW	0		;ADR ARG3
+TARG4:	DW	0		;ADR ARG4
+TARG5:	DW	0		;ADR ARG5
+TARG6:	DW	0		;ADR ARG6
+TARG7:	DW	0		;ADR ARG7
+TARG8:	DW	0		;ADR ARG8
+TARG9:	DW	0		;ADR ARG9
+TEMP:	DB	4,0		;Temp for ARG-PTR, IP
+	;SYS-Error message
+CPMERR:	DB	'CP/M-Version 2+ required !',BEEP,CR,LF,'$'
+	;Start Error's
+F_CMXA:	DB	'Too many arguments !',BEEP,'$'
+F_CMXB:	DB	'No socket available !',BEEP,'$'
+F_CMXC:	DB	'No data socket available !',BEEP,'$'
+F_CMXD:	DB	'More TPA required !',BEEP,'$'
+F_CMXE:	DB	'Host required !',BEEP,'$'
+F_CMXF:	DB	'Local filename required !',BEEP,'$'
+F_CMXG:	DB	'Serve|Get|Put required !',BEEP,'$'
+F_CMXH:	DB	'Cannot bind local Server-Socket !',BEEP,'$'
+F_CMXI:	DB	'Cannot open local Server-Socket !',BEEP,'$'
+	;DNS Error's
+DNSSYE:	DB	'Invalid :port !',BEEP,'$'
+DNSSE3:	DB	'Unknown host !',BEEP,'$'
+DNSQSE:	DB	'DNS Server Error ','$'
+DNSQCE:	DB	'DNS Client Error ','$'
+DNSEBP:	DB	' !',BEEP,'$'
+	;Messages
+F_CIXA:	DB	'RRQ FROM ','$'
+F_CIXB:	DB	'WRQ FROM ','$'
+F_CIXC:	DB	'RRQ TO ','$'
+F_CIXD:	DB	'WRQ TO ','$'
+F_CIXE:	DB	': ','$'
+F_CIXF:	DB	' kB ','$'
+F_CIXG:	DB	'(wait: ','$'
+F_CIXH:	DB	' s) ','$'
+F_CIXI:	DB	'             ','$'
+F_CIXJ:	DB	CLLN,LF,CLLN,LF,CLLN,LNUP,'$'
+F_CIXK:	DB	LNUP,CLLN,LNUP,CLLN,'$'
+F_CIXL:	DB	'OK',BEEP,'$'
+F_CIXM:	DB	'Specify remote host!','$'
+F_S_ON:	DB	'ON '
+F_SOFF:	DB	'OFF'
+	;TFTP MENU
+F_MEN1:	DB	CLS
+	DB	'  ### TFTP Client & Server ',V_MAJOR+'0','.',V_MINOR+'0'
+	DB	'  2009-2011 by >susowa< ###',CR,LF
+	DB	' ---------------------------------------------------------',CR,LF
+F_MTMO:	DB	'   >T< - Transfer-Timeout   : 30 s    >ESC< - Close TFTP',CR,LF
+F_MSYF:	DB	'   >Y< - System-Files       : ON ',CR,LF
+	DB	'   >H< - Remote Host[:Port] : ','$'
+F_MEN2:	DB	CR,LF
+	DB	'   >F< - Remote Folder      : ','$'
+F_MEN3:	DB	CR,LF
+	DB	'         ----- Client -----           ----- Server -----',CR,LF
+F_MSRT:	DB	'   >C< - ?##/????????:                >S< - ?##/????????: ',CR,LF
+	DB	'   >D< - display files                >L< - list files',CR,LF
+F_MSSS:	DB	'   >G< - Get local file from Host     >N< - ON ',CR,LF
+F_MSPT:	DB	'   >P< - Put local file(s) to Host    >O< - Port: 69   ',CR,LF
+	DB	' ---------------------------------------------------------',CR,LF
+F_MLIP:	DB	'            ### Transfers: 192.168.000.002 ###',CR,LF
+	DB	'$'
+	;Server 'RRQ FROM Hostname: ????????.??? 25 kB (wait: 0 s)'
+	;Client 'WRQ TO Hostname: ????????.??? 0 kB (wait: 45 s)'
+	;
+	;KEYWORD-TAB
+WKEYTB:	DB	'GET',0
+	DB	'PUT',0
+	DB	'SERVE',0
+	;TFTP-Usage
+TF_HLP:	DB	'Server Menu:  tftp [-h|v] serve [DU|DIR[:port]] [host[:port]]',CR,LF
+	DB	'   Get File:  tftp [-h|v] get host[:port] local [remote]',CR,LF
+	DB	'Put File[s]:  tftp [-h|v] put host[:port] local[s] [remote]',CR,LF
+	DB	'Options:',CR,LF
+	DB	'    -h|v - show help or version and exit',CR,LF
+	DB	'   serve - start server',CR,LF
+	DB	'     get - get local file from remote Host',CR,LF
+	DB	'     put - put local file[s] to remote Host',CR,LF
+	DB	'  DU|DIR - Drive/User or named DIR to serve',CR,LF
+	DB	'    port - server port (standard: 69)',CR,LF
+	DB	'    host - remote Host (name or IP-address)',CR,LF
+	DB	'local[s] - local filename or [ambiguous specification]',CR,LF
+	DB	'  remote - remote [Path][Filename] or [Path]'
+	DB	'$'
+	;TFTP-Version
+TFTHT1:	DB	'###  TFTP Client & Server  CP/M 2+  ###',CR,LF
+	DB	'              Version ',V_MAJOR+'0','.',V_MINOR+'0',CR,LF
+	DB	'         "KCNet TCP/IP-Stack"',CR,LF
+	DB	'### copyright 2009-2011 by >susowa< ###',CR,LF
+	DB	LF,'$'
+TFTHT2:	DB	CR,LF
+	DB	'           Show Help with -h','$'
+;### common SUB-programs ###############################
+	;clear RAM
+CLRMEM:	LD	(HL),0
+	LD	D,H
+	LD	E,L
+	INC	DE
+	DEC	BC
+	LDIR
+	RET
+	;CR+LF Out
+NEWLN:	PUSH	AF
+	LD	A,CR
+	CALL	COUT##
+	LD	A,LF
+	CALL	COUT##
+	POP	AF
+	RET
+	;(DE)-string+0/'$' Out
+ZKOUT:	PUSH	AF
+ZKOU1:	LD	A,(DE)
+	INC	DE
+	AND	A
+	JR	Z,ZKOU2
+	CP	'$'
+	JR	Z,ZKOU2
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	ZKOU1
+ZKOU2:	POP	AF
+	RET
+	;show Version
+TFTVER:	PUSH	AF
+	LD	DE,TFTHT1
+	CALL	ZKOUT
+	LD	DE,N_DLBL	;IF-driver label
+	CALL	ZKOUT
+	LD	DE,TFTHT2
+	CALL	ZKOUT
+	POP	AF
+	RET
+	;ARG's in and parse
+INPUT:	LD	A,1		;Echo ON
+	LD	HL,(FMDIRB)	;BUFFER
+	INLINE			;Input Macro
+	LD	DE,ARGMAX	;ARG-Table
+	LD	A,B		;terminate parameter with 0 
+	LD	(DE),A		;load MAX
+	CALL	ARGV##		;parse
+	SCF
+	RET	NZ		;too much parameter
+	CCF
+	RET
+	;compare (DE)-(HL) 2/4/6 Byte
+CMP2BT:	LD	BC,2
+	JR	CMPBTL
+CMP6BT:	LD	BC,6
+CMPBTL:	LD	A,(DE)
+	INC	DE
+	CPI
+	RET	NZ
+	JP	PE,CMPBTL
+	RET			;Z=1 same
+	;compare A-(HL) 4 Byte
+CPA4BT:	LD	BC,4	
+CPABTL:	CPI
+	RET	NZ
+	JP	PE,CPABTL
+	RET			;Z=1 same
+	;count & get ARG-PTR
+CNTARG:	LD	HL,ARGN
+	DEC	(HL)
+	RET	Z
+GETARG:	;get+next ARG
+	LD	HL,(TEMP)
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	INC	HL
+	LD	(TEMP),HL	;save next ARG-PTR
+	EX	DE,HL		;HL: address ARG
+	RET
+	;copy Local FN ZString (HL) -> (DE)
+CPLFNM:	LD	B,12		;max. length
+	JR	COPYNM
+	;copy Remote FN ZString (HL) -> (DE)
+CPRFNM:	LD	B,255		;max. length
+COPYNM:	PUSH	AF
+	XOR	A
+COPYNR:	PUSH	BC
+	LDI			;copy
+	POP	BC
+	CP	(HL)
+	JR	Z,COPYNE	;destination string end
+	DJNZ	COPYNR
+COPYNE:	LD	(DE),A		;write 0-Byte
+	INC	DE		;EA+1
+	POP	AF
+	RET
+	;- resolve host-string[:port]
+	;- copy valid HOST NAME to (TDMNBF)
+	;- copy valid IP to HOSTIP
+	;- copy valid PORT to HOSTPT
+	;PI:   HL - address of host name zstring
+	;PO: CY=1 - ERR
+	;      DE - if ERR, address ERR-String
+MKHOST:	PUSH	HL
+MKPOR1:	LD	A,(HL)
+	CP	':'		;find PORT
+	JR	Z,MKPOR2
+	OR	A
+	JR	Z,MKPOR3	;not found (CY=0!)
+	INC	HL
+	JR	MKPOR1
+MKPOR2:	LD	(HL),0		;clear ':'!
+	INC	HL
+	CALL	ATOI		;(HL)STRING->DE=PORT#
+	JR	C,MKPOR3
+	OR	D
+	SCF
+	JR	Z,MKPOR3	;Port=0 not allowed
+	CCF
+	LD	(FCPORT),DE
+	LD	HL,FCPORT
+	LD	DE,HOSTPT
+	CALL	HTONS		;conv.+copy
+MKPOR3:	POP	HL
+	LD	DE,DNSSYE	;'Invalid :port'
+	RET	C
+	EX	DE,HL
+	LD	HL,TEMP
+	LD	A,(DE)
+	CP	'0'
+	JR	C,MKHOS5	;<0 no Digit
+	CP	'9'+1
+	JR	NC,MKHOS5	;>9 no Digit
+	;try to convert num. IP from digit(s)
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	JR	C,MKHOS5	;Err->try Name
+	PUSH	DE		;IP-string
+	;resolve IP in TEMP
+	PUSH	HL
+	;copy IP to (DMNBUF) (preserves IP in TEMP for copy to HOSTIP)
+	LD	DE,(DMNBUF)	;pointer
+	PUSH	DE
+	LD	BC,4
+	LDIR
+	;resolve IP in (DMNBUF)
+	POP	DE
+	LD	HL,(LINEBF)	;pointer
+	CALL	GHBADR		;try iquery:(DE)IP->(DE)Name
+	POP	HL		;numerical IP
+	POP	BC		;IP-String
+	JR	NC,MKHOS3	; OK: copy Name and HOSTIP
+	LD	D,B
+	LD	E,C		;ERR: copy IP-string and HOSTIP
+MKHOS3:	PUSH	HL
+	EX	DE,HL
+	LD	DE,(TDMNBF)
+	CALL	CPRFNM		;copy Name to (TDMNBF)
+	POP	HL
+MKHOS4:	LD	DE,HOSTIP
+	LD	BC,4
+	LDIR			;copy num. IP to HOSTIP
+	OR	A		;OK
+	RET
+MKHOS5:	;copy Name to (DMNBUF)
+	EX	DE,HL
+	PUSH	HL		;host name string
+	LD	DE,(DMNBUF)	;pointer
+	PUSH	DE
+	CALL	CPRFNM
+	;resolve NAME in (DMNBUF)
+	POP	DE
+	LD	HL,(LINEBF)	;pointer
+	CALL	GHBNAM		;query:(DE)Name->(DE)IP
+	EX	DE,HL		;HL: numerical IP
+	POP	DE		;DE: host name string
+	JR	NC,MKHOS3	;OK: copy name and new IP
+	;A=ERR# from resolver
+	LD	DE,DNSSE3	;'Unknown host'
+	CP	3
+	SCF
+	RET	Z
+	LD	DE,DNSQSE	;'Server'
+	CP	16
+	JR	C,MKHOS6
+	LD	DE,DNSQCE	;'Client'
+MKHOS6:	CALL	ZKOUT		;ERR C/S Out
+	CALL	PAFDC##		;ERR-number
+	LD	DE,DNSEBP
+	SCF
+	RET
+	;get TRANSFER-State (clear A = KeyCode)
+CHTRNS:	XOR	A		;CY/KeyCode=0
+	BIT	6,(IX)
+	RET	Z		;no Transfers
+	SCF			;Transfers in progress
+	BIT	4,(IX)
+	RET	Z		;client commandline
+	LD	A,BEEP
+	CALL	COUT##
+	XOR	A		;KeyCode=0
+	SCF
+	RET
+	;get DataSocket
+	;PO: HL - address used socket-structure
+SEDSCK:	LD	A,0FFH		;any
+	LD	D,SK_DGRAM	;Mode
+	LD	E,0		;Flags
+	CALL	SOCKET		;get DATA-Socket
+	RET	C		;ERR: all sockets online!
+	LD	C,A
+	LD	A,(ANZSCK)
+	LD	B,A
+	LD	HL,(ADDSCK)
+	LD	DE,FSCKLG
+SEUSCN:	LD	A,(HL)
+	INC	A
+	JR	NZ,SEUSCU	;structure in use
+	LD	(HL),C		;write socket #
+	RET			;OK
+SEUSCU:	ADD	HL,DE
+	DJNZ	SEUSCN
+	LD	A,C
+	CALL	CLOSE		;release socket !
+	SCF			;ERR: all structures in use!
+	RET
+	;calc. TIME-Diff. NOW-OLD (<60s!)
+	;PI: DE - old Timer
+	;PO: HL - TIME-Diff. in ms
+CALCTD:	CALL	N_TIME		;get NOW
+CALCTU:	OR	A
+	SBC	HL,DE		;NOW-OLD
+	RET	NC
+	LD	DE,N_XTIME
+	ADC	HL,DE
+	RET
+	;wait 2,5 s
+WAITST:	PUSH	AF
+	PUSH	HL
+	PUSH	DE
+	CALL	N_TIME		;Timer NOW
+	EX	DE,HL
+WAITS1:	PUSH	DE
+	CALL	CALCTD		;next Diff.
+	POP	DE
+	LD	BC,2500
+	SBC	HL,BC
+	JR	C,WAITS1	;< 2,5 s (wait)
+	POP	DE
+	POP	HL
+	POP	AF
+	RET
+	;get 'spec'-string from Input
+	;PI:   HL - PTR to Input
+	;      DE - PTR to 'spec'-string
+	;PO: CY=1 - ERR-CHR in Input
+	;    C<>0 - ? or * in Input
+GETSPC:	;clear all
+	PUSH	DE
+	EX	DE,HL
+	LD	B,8		;F
+GETSP1:	LD	(HL),' '
+	INC	HL
+	DJNZ	GETSP1
+	LD	(HL),'.'
+	INC	HL
+	LD	B,3		;T
+GETSP2:	LD	(HL),' '
+	INC	HL
+	DJNZ	GETSP2
+	LD	(HL),0		;delimiter
+	EX	DE,HL
+	POP	DE
+	;expand Input: <>.,:;=[]%|(){}/\ not allowed
+	LD	C,0		;Counter for '?' 
+	LD	B,8		;F max. 8 Chr
+	PUSH	DE
+GETSP3:	LD	A,(HL)
+	CP	' '+1
+	JR	NC,GETSP4
+	;Input ready (toggle CY!)
+GETSER:	POP	DE
+	CCF
+	RET
+GETSP4:	INC	HL
+	CP	'.'
+	JR	Z,GETSP8	;cont. with T
+	CALL	CPERRC		;(CY=0!)
+	JR	Z,GETSER	;ERR not allowed CHR
+	CP	'?'
+	JR	NZ,GETSP5
+	INC	C
+GETSP5:	CP	'*'
+	JR	Z,GETSP6	;-> '?'
+	CALL	CAPS##
+	LD	(DE),A
+	INC	DE
+	DJNZ	GETSP3
+	JR	GETSP7		;F ready
+GETSP6:	CALL	GETS11
+GETSP7:	LD	A,(HL)
+	CP	'.'
+	JR	NZ,GETSP8
+	INC	HL		;skip '.'
+GETSP8:	POP	DE
+	EX	DE,HL
+	LD	A,C
+	LD	BC,8+1		;F+'.'
+	ADD	HL,BC
+	LD	C,A
+	EX	DE,HL
+	LD	B,3		;T max. 3 Chr
+GETSP9:	LD	A,(HL)
+	CP	' '+1
+	CCF
+	RET	NC		;Input ready
+	INC	HL
+	CALL	CPERRC
+	CCF			;set CY!
+	RET	Z		;ERR not allowed CHR
+	CP	'?'
+	JR	NZ,GETS10
+	INC	C
+GETS10:	CP	'*'
+	JR	Z,GETS11	;-> '?'
+	CALL	CAPS##
+	LD	(DE),A
+	INC	DE
+	DJNZ	GETSP9
+	OR	A
+	RET
+GETS11:	LD	A,'?'		;fill with '?'
+	LD	(DE),A
+	INC	DE
+	INC	C
+	DJNZ	GETS11
+	OR	A
+	RET
+	;compare not allowed CHR's
+ERRCHR:	DB	'<>.,:;=[]%|(){}/\'
+ERRCLG	EQU	$-ERRCHR
+CPERRC:	PUSH	HL
+	PUSH	BC
+	LD	HL,ERRCHR
+	LD	BC,ERRCLG
+	CPIR
+	SCF
+	CCF			;CY=0!
+	POP	BC
+	POP	HL
+	RET
+	;compare not allowed remote CHR's
+ERRCRM:	DB	'\/:*?"<>|'
+ERCRLG	EQU	$-ERRCRM
+CPERMC:	PUSH	HL
+	PUSH	BC
+	LD	HL,ERRCRM
+	LD	BC,ERCRLG
+	CPIR
+	SCF
+	CCF			;CY=0!
+	POP	BC
+	POP	HL
+	RET
+	;find matching 'spec'-entry and load SPCNAM
+NXSPEC:	LD	HL,(SPCPTR)
+	LD	DE,16
+	ADD	HL,DE
+	LD	(SPCPTR),HL	;+Pointer
+	LD	HL,(SPCCNT)
+	DEC	HL
+	LD	(SPCCNT),HL	;-count
+	LD	A,H
+	OR	L
+	JR	NZ,NMSPEC
+RSSPEC:	LD	HL,0		;reset 'spec'
+	LD	(SPCCNT),HL
+	LD	HL,(SPCDPT)
+	LD	(FMDIRB),HL	;restore old DIR-PTR
+	SCF			;ready
+	RET
+NMSPEC:	LD	HL,(SPCPTR)
+	LD	A,(SPCTUS)
+	CP	(HL)		;match ?
+	JR	NZ,NXSPEC	;next entry
+	INC	HL
+	LD	DE,SPCNAM	;F.T+0
+	LD	BC,8
+	LDIR			;copy F
+	INC	DE		;skip '.'
+	LD	BC,3
+	LDIR			;copy T
+	OR	A
+	RET
+	;F.N-ZString to local FCB-Name
+CPSTFC:	PUSH	BC
+	PUSH	DE
+	XOR	A
+	LD	(DE),A
+	INC	DE
+	LD	BC,8
+	LDIR
+	INC	HL
+	LD	BC,3
+	LDIR
+	POP	DE
+	POP	BC
+	RET
+	;test Folder: CY=0 ok
+TFOLDR:	INC	HL
+	CALL	TSLASH
+	DEC	HL
+	CCF
+	RET	C		;second char (b)slash
+	OR	A
+	SCF
+	RET	Z		;second char string-end
+	PUSH	HL
+	XOR	A
+TFOLD1:	INC	HL
+	CP	(HL)
+	JR	NZ,TFOLD1	;search string-end
+	DEC	HL		;last char ...
+	CALL	TSLASH
+	POP	HL		;first char
+	RET	C		; ... no (b)slash
+	;test first char
+TSLASH:	LD	A,(HL)
+	CP	'/'
+	RET	Z
+	CP	'\'
+	RET	Z
+	SCF			;no (b)slash
+	RET
+	;write local IP in memory
+	;PI: DE - address of binary IP
+	;    HL - memory address
+WRMLIP:	LD	B,15		;max. length
+	LD	A,' '		;clear
+	CALL	FILLB##
+	LD	B,4		;4*dec.
+	JR	WRMLI2
+WRMLI1:	LD	(HL),'.'
+	INC	HL
+WRMLI2:	LD	A,(DE)
+	INC	DE
+	PUSH	DE
+	LD	D,0	
+	LD	E,A
+	CALL	ITOA		;conv. NUM
+	POP	DE
+	DJNZ	WRMLI1
+	RET
+	;write DU/DIR: in memory
+	;PI: DE - DU:
+	;    HL - address
+WRCDIR:	LD	B,13		;max. length
+	LD	A,' '		;clear
+	CALL	FILLB##
+	LD	A,D
+	ADD	A,'A'
+	LD	(HL),A		;write D
+	INC	HL
+	LD	A,E
+	EX	DE,HL
+	CALL	MAFDC##		;write U
+	EX	DE,HL
+	LD	A,':'
+	LD	(HL),A		;write
+	LD	B,D
+	LD	C,E
+	CALL	TSTNDR		;DE: first NDIR
+	RET	C
+	LD	(ARGN),A	;entries
+	INC	B		;D->1..16
+WRCDI1:	LD	A,(DE)
+	INC	DE
+	CP	B		;D=?
+	JR	NZ,WRCDI3
+	LD	A,(DE)
+	CP	C		;U=?
+	JR	NZ,WRCDI3
+	INC	DE
+	LD	A,'/'
+	LD	B,9		;max. length+1
+WRCDI2:	LD	(HL),A		;write char
+	INC	HL
+	LD	A,(DE)		;name char
+	INC	DE
+	CP	' '
+	JR	Z,WRCDI4	;name end
+	DJNZ	WRCDI2
+	JR	WRCDI4
+WRCDI3:	PUSH	HL
+	LD	HL,17
+	ADD	HL,DE
+	EX	DE,HL		;DE=next NDIR
+	POP	HL
+	LD	A,(ARGN)
+	DEC	A
+	LD	(ARGN),A
+	JR	NZ,WRCDI1	;continue
+WRCDI4:	LD	(HL),':'
+	RET
+	;test named DIR's
+TSTNDR:	LD	DE,(Z3EPTR)
+	LD	A,D
+	OR	E
+	SCF
+	RET	Z		;no ZCPR
+	PUSH	HL		;save PTR
+	LD	HL,21
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)		;address of first NDIR
+	INC	HL
+	XOR	A
+	OR	(HL)		;load and test counter
+	POP	HL		;restore PTR
+	RET	NZ		;>0
+	CCF			;=0
+	RET
+	;load new DIR: to BC and inc. PTR
+	;PO: BC - new DU if CY=0
+TSTDIR:	CALL	TSTNDR
+	RET	C
+	PUSH	HL		;save PTR
+	LD	B,A
+TSTDI1:	LD	A,(DE)		;NDIR
+	OR	A
+	JR	Z,TDUERR	;no more entries
+	PUSH	BC
+	LD	B,A		;Drive
+	DEC	B		;0... for LOGUD## !
+	INC	DE
+	LD	A,(DE)
+	LD	C,A		;User
+	INC	DE
+	PUSH	HL		;DIR
+	PUSH	DE		;NDIR
+	PUSH	BC		;save DU:
+	LD	B,8
+TSTDI2:	LD	A,(DE)
+	CP	' '
+	JR	Z,TSTDI3	;end of NDIR
+	LD	C,A
+	LD	A,(HL)
+	CALL	CAPS##		;ucase
+	CP	C
+	JR	NZ,TSTDI4 	;DIR<>NDIR
+	INC	HL
+	INC	DE
+	DJNZ	TSTDI2
+TSTDI3:	CALL	TDUEND		;end of DIR ?
+TSTDI4:	POP	BC
+	POP	DE
+	JR	NZ,TSTDI5
+	;DIR=NDIR
+	POP	DE		;retain HL = end of DIR !
+	POP	DE		;retain BC = new DU !
+	JR	TDUSOK
+TSTDI5:	POP	HL
+	EX	DE,HL
+	LD	BC,16
+	ADD	HL,BC
+	EX	DE,HL		;DE=next NDIR
+	POP	BC
+	DJNZ	TSTDI1
+	JR	TDUERR		;no more entries
+	;load new D|U: to BC and inc. PTR
+	;PI:  BC - current Drive/User	
+	;PO: B|C - new Drive|User if CY=0
+TSTDRU:	PUSH	HL
+	LD	A,(HL)
+	CALL	ISALPHA##
+	JR	Z,TDDRIV	;A-Z
+	CALL	ISDIGIT##
+	JR	Z,TDUSER	;0-9
+TDUERR:	POP	HL		;reset HL !
+	SCF
+	RET
+TDUEND:	LD	A,(HL)
+	OR	A
+	RET	Z
+	CP	':'
+	RET
+TDDRIV:	AND	05FH		;UCASE
+	SUB	'A'		;new Drive
+	CP	'P'-'A'+1
+	JR	NC,TDUERR
+	LD	B,A
+	INC	HL
+	CALL	TDUEND
+	JR	Z,TDUSOK
+	CALL	ISDIGIT##
+	JR	NZ,TDUERR
+TDUSER:	CALL	EVAL10##	;new USER
+	CALL	TDUEND
+	JR	NZ,TDUERR
+	LD	A,E
+	CP	32
+	JR	NC,TDUERR
+	LD	C,A
+	CCF			;CY=0!
+TDUSOK:	POP	DE		;retain HL !
+	RET
+	;Online-Test with ERR-Message to CON
+	;PO:	CY=1 offline
+ONTEST:	CALL	N_LSTA		;LINK STATE
+	XOR	A
+	OR	E		;OK?
+	LD	DE,NONTXT
+	JR	NETTSE
+NONTXT:	DB	'Network-cable not connected !',BEEP,'$'
+	;Network-Test with ERR-Message to CON
+	;PO:	CY=1 not configured
+NETTST:	LD	HL,LOCNET
+	PUSH	HL
+	CALL	N_GLIP		;read IP
+	CALL	N_GLMA		;read MASK
+	XOR	A
+	LD	DE,NKNTXT
+	POP	HL
+	CALL	CPA4BT		;IP 4*000 ?
+	JR	Z,NETTSE	;not conf.
+	CALL	CPA4BT		;SNM 4*000 ?
+NETTSE:	CALL	Z,ZKOUT
+	SCF			;Error
+	RET	Z		;not conf./offline
+	CCF			;OK
+	RET
+NKNTXT:	DB	'Network not configured !',BEEP,'$'
+	;open Server-Socket
+	;PI:  A - socket number
+SSOPEN:	LD	HL,TFTPPT	;Server-Port
+	CALL	BIND
+	LD	DE,F_CMXH	;bind error
+	JR	C,SSOPEF
+	CALL	CONNECT
+	LD	DE,F_CMXI	;open error
+	RET	NC		;OK
+SSOPEF:	CALL	ZKOUT		;Err-MSG
+	SET	7,(IX)		;->Server offline
+	CALL	SHUTDN
+SSOPEW:	CALL	CONDIN##
+	JR	Z,SSOPEW	;wait
+	RET
+	;
+;###### SYSLIB-CALL's (may influence IX/IY !) ##########
+_DIRQ:	PUSH	IX
+	PUSH	IY
+	CALL	DIRQ##
+	JR	_SLPOP
+_F$CLOSE: PUSH	IX
+	PUSH	IY
+	CALL	F$CLOSE##
+	JR	_SLPOP
+_F$DELETE: PUSH	IX
+	PUSH	IY
+	CALL	F$DELETE##
+	JR	_SLPOP
+_F$OPEN: PUSH	IX
+	PUSH	IY
+	CALL	F$OPEN##
+	JR	_SLPOP
+_OPENT:	PUSH	DE
+	LD	A,(EXTVER)
+	OR	A
+	LD	DE,(EXTCFG)
+	RES	0,E		;PUBLIC=off
+	LD	C,STCFLG
+	CALL	NZ,BDOS
+	POP	DE
+	RET
+_F$WOPEN: PUSH	IX
+	PUSH	IY
+	CALL	_OPENT
+	CALL	F$OPEN##
+	JR	_OPENR
+_F$MOPEN: PUSH	IX
+	PUSH	IY
+	CALL	_OPENT
+	CALL	F$MOPEN##
+_OPENR:	PUSH	DE
+	PUSH	AF
+	LD	A,(EXTVER)
+	OR	A
+	LD	DE,(EXTCFG)	;PUBLIC=old
+	LD	C,STCFLG
+	CALL	NZ,BDOS
+	POP	AF
+	POP	DE
+	JR	_SLPOP
+_F$READ: PUSH	IX
+	PUSH	IY
+	CALL	F$READ##
+_SLPOP:	POP	IY
+	POP	IX
+	RET
+_F$WRITE: PUSH	IX
+	PUSH	IY
+	CALL	F$WRITE##
+	JR	_SLPOP
+_GETUD:	PUSH	IX
+	PUSH	IY
+	CALL	GETUD##
+	JR	_SLPOP
+_GUA:	PUSH	IX
+	PUSH	IY
+	CALL	GUA##
+	JR	_SLPOP
+_INITFCB: PUSH	IX
+	PUSH	IY
+	CALL	INITFCB##
+	JR	_SLPOP
+_LOGUD:	PUSH	IX
+	PUSH	IY
+	CALL	LOGUD##
+	JR	_SLPOP
+_PFN1:	PUSH	IX
+	PUSH	IY
+	CALL	PFN1##
+	JR	_SLPOP
+_PFN2:	PUSH	IX
+	PUSH	IY
+	CALL	PFN2##
+	JR	_SLPOP
+_PUTUD:	PUSH	IX
+	PUSH	IY
+	CALL	PUTUD##
+	JR	_SLPOP
+_RETUD:	PUSH	IX
+	PUSH	IY
+	CALL	RETUD##
+	JR	_SLPOP
+_SETDMA: PUSH	IX
+	PUSH	IY
+	CALL	SETDMA##
+	JR	_SLPOP
+;###### TFTP MENU Sub-programs #########################
+TFRTXA:	DB	'Select Server Directory',CR,LF
+	DB	'    current : ','$'
+TFRTXI:	DB	' A0-P31|DIR : ','$'
+TFRSEL:	LD	DE,F_CIXJ
+	CALL	ZKOUT
+	LD	DE,TFRTXA
+	CALL	ZKOUT
+	LD	HL,F_MSRT+44
+TFRPTO:	LD	A,(HL)
+	INC	HL
+	CALL	COUT##
+	CP	':'
+	JR	NZ,TFRPTO
+	CALL	NEWLN
+	JR	TFRPTI
+TFRPTW:	LD	A,BEEP		;Error
+	CALL	COUT##
+TFRPTI:	LD	DE,TFRTXI
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,TFRPTW	;>1
+	LD	A,(ARGN)
+	OR	A
+	JR	Z,TFRPNE	;no Input
+	LD	HL,(TARG1)	;1. Token
+	CALL	TSTDIR
+	JR	NC,TFRPTL
+	LD	BC,(FUROOT)	;current DU:
+	CALL	TSTDRU
+	JR	C,TFRPTW	;Err
+TFRPTL:	CALL	TDUEND
+	JR	NZ,TFRPTW	;Err last char
+	LD	(FUROOT),BC	;new DU:
+TFRPNE:	SET	5,(IX)		;update Server Menu
+	XOR	A
+	RET
+TFCFXA:	DB	'Select Client Directory',CR,LF
+	DB	'    current : ','$'
+TFCFXI:	DB	' A0-P31|DIR : ','$'
+TFCFIL:	LD	DE,F_CIXJ
+	CALL	ZKOUT
+	LD	DE,TFCFXA
+	CALL	ZKOUT
+	LD	HL,F_MSRT+9
+TFCFIO:	LD	A,(HL)
+	INC	HL
+	CALL	COUT##
+	CP	':'
+	JR	NZ,TFCFIO
+	CALL	NEWLN
+	JR	TFCFII
+TFCFIW:	LD	A,BEEP		;Error
+	CALL	COUT##
+TFCFII:	LD	DE,TFCFXI
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,TFCFIW	;>1
+	LD	A,(ARGN)
+	OR	A
+	JR	Z,TFRPNE	;no Input
+	LD	HL,(TARG1)	;1. Token
+	CALL	TSTDIR
+	JR	NC,TFCFDL
+	LD	BC,(FUCLNT)	;current DU:
+	CALL	TSTDRU
+	JR	C,TFCFIW	;Err
+TFCFDL:	CALL	TDUEND
+	JR	NZ,TFCFIW	;Err last char
+	LD	(FUCLNT),BC	;new DU:
+	JP	TFRPNE
+TFTTXA:	DB	'Select Transfer-Timeout',CR,LF
+	DB	' current : ','$'
+TFTTXI:	DB	'  1-59 s : ','$'
+TFTSEL:	LD	DE,F_CIXJ
+	CALL	ZKOUT
+	LD	DE,TFTTXA
+	CALL	ZKOUT
+	LD	HL,(F_TMO)
+	LD	DE,1000
+	CALL	DIVHD##
+	CALL	PHLFDC##
+	CALL	NEWLN
+	JR	TFTPTI
+TFTPTW:	LD	A,BEEP		;Error
+	CALL	COUT##
+TFTPTI:	LD	DE,TFTTXI
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,TFTPTW	;>1
+	LD	A,(ARGN)
+	OR	A
+	JP	Z,TFRPNE	;no Input
+	LD	HL,(TARG1)	;1. Token
+	CALL	EVAL10##	;convert TIME
+	INC	D
+	DEC	D
+	JR	NZ,TFTPTW	;>255
+	CP	60
+	JR	NC,TFTPTW	;>59
+	OR	A
+	JR	Z,TFTPTW	;=0
+	LD	HL,1000
+	CALL	MULHD##
+	LD	(F_TMO),HL
+	JP	TFRPNE
+	;SYS-Files ON/OFF
+TFYSEL:	LD	A,(F_SYSF)
+	XOR	40H		;toggle SYS-Bit
+	LD	(F_SYSF),A
+	JP	TFRPNE
+	;DIR-strings & messages
+TD_FCA:	DB	0,'????????','???'
+TD_FMA:	DB	'*.*','$'
+TD_FCB:	DB	0,'????????','???'
+TD_FIL:	DB	'    ','$'
+TD_TX1:	DB	'No File: ','$'
+TD_TX2:	DB	' File(s): ','$'
+TD_TX3:	DB	'>ESC< - break   >KEY< - more...',CR,LF,'$'
+TD_TX4:	DB	'Press Key...',CR,LF,'$'
+TSDRXA:	DB	LNUP
+	DB	'Select Directory Mask or >ET< for all Files',CR,LF
+	DB	' Mask : ','$'
+	;reset old mask and string
+RESMSK:	LD	HL,TD_FCA
+	LD	DE,TD_FCB
+	LD	BC,12
+	LDIR
+	LD	HL,TD_FMA
+	LD	DE,PCKNAM
+	LD	BC,4
+	LDIR
+	RET
+	;DIR SERVER
+TFRDIR:	LD	BC,(FUROOT)
+	JR	TFCLS1
+	;DIR CLIENT
+TFCLST:	LD	BC,(FUCLNT)
+TFCLS1:	CALL	_LOGUD		;Login DIR
+	CALL	RESMSK		;reset
+	LD	DE,F_CIXJ
+	CALL	ZKOUT
+	LD	DE,TSDRXA
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,SHEDIR	;>1
+	LD	A,(ARGN)
+	OR	A
+	JR	Z,SHWDIR	;no Input
+	;test and expand input
+	LD	HL,(TARG1)	;PTR to Input
+	LD	DE,PCKNAM	;mask-string
+	CALL	GETSPC		;Input to 8.3+0 in PCKNAM
+	JR	C,SHEDIR	;ERR CHR in Input
+	XOR	A
+	OR	(HL)
+	JR	NZ,SHEDIR	;last CHR+1 <> 0	
+	LD	HL,PCKNAM	;mask-string
+	LD	DE,TD_FCB	;DIRQ-FCB
+	CALL	CPSTFC		;string to FCB
+	JR	SHWDIR
+SHEDIR:	LD	A,BEEP		;Error
+	CALL	COUT##
+	CALL	RESMSK		;reset
+SHWDIR:	;Show Directory
+	LD	DE,F_CIXK
+	CALL	ZKOUT
+	CALL	_GUA		;get current User
+	LD	(TEMP),A	;save User
+	LD	HL,(FMDIRB)
+	LD	DE,TD_FCB
+	LD	A,(F_SYSF)	;select Byte
+	CALL	_DIRQ
+	JR	NZ,TFRDI1
+	LD	DE,XE_CM5	;TPA-Overflow
+	JR	TFRDI7
+TFRDI1:	LD	A,B
+	OR	C
+	JR	NZ,TFRDI2
+	LD	DE,TD_TX1	;no File
+	CALL	ZKOUT
+	LD	DE,PCKNAM
+	CALL	ZKOUT
+	JR	TFRDI8
+TFRDI2:	EX	DE,HL
+	LD	H,B
+	LD	L,C
+	CALL	PHLFDC##
+	EX	DE,HL
+	LD	DE,TD_TX2
+	CALL	ZKOUT
+	LD	DE,PCKNAM
+	CALL	ZKOUT
+	CALL	NEWLN
+	XOR	A		;Out Counter
+TFRDI3:	LD	E,A
+	LD	A,(TEMP)	;current User
+	CP	(HL)
+	LD	A,E
+	JR	NZ,TFRDI4
+	LD	D,H
+	LD	E,L
+	INC	DE
+	CALL	_PFN1
+	LD	DE,TD_FIL
+	CALL	ZKOUT
+	INC	A
+TFRDI4:	LD	DE,16
+	ADD	HL,DE
+	DEC	BC
+	LD	E,A
+	LD	A,B
+	OR	C
+	LD	A,E
+	JR	Z,TFRDI6	;ready
+	CP	80
+	JR	NZ,TFRDI3	;cont.
+	LD	E,0		;reset Counter
+	PUSH	DE
+	LD	DE,TD_TX3
+	CALL	ZKOUT		;more
+	POP	DE
+TFRDI5:	CALL	CONDIN##
+	JR	Z,TFRDI5	;wait
+	CP	ETX
+	JR	Z,TFRDIA	;break
+	CP	ESC
+	JR	Z,TFRDIA	;break
+	LD	A,E
+	JR	TFRDI3		;cont.
+TFRDI6:	OR	A
+	JR	NZ,TFRDI8
+	LD	DE,TD_TX1	;no File
+TFRDI7:	CALL	ZKOUT
+TFRDI8:	CALL	NEWLN
+	LD	DE,TD_TX4
+	CALL	ZKOUT		;Key
+TFRDI9:	CALL	CONDIN##
+	JR	Z,TFRDI9	;wait
+TFRDIA:	JP	TFRPNE
+	;start/stop SERVER
+TFSWCH:	LD	A,(IX)
+	XOR	80H		;toggle Server ON/OFF
+	LD	(IX),A
+	LD	A,(F_SCK)	;Server-Socket
+	BIT	7,(IX)
+	JR	NZ,TFSOFF
+	CALL	SSOPEN
+	JP	TFRPNE
+TFSOFF:	CALL	SHUTDN		;->offline
+	JP	TFRPNE
+	;SERVER-PORT
+TFSPXA:	DB	'Select Server-Port',CR,LF
+	DB	' current : ','$'
+TFSPXI:	DB	' 1-65535 : ','$'
+TFSPRT:	LD	DE,F_CIXJ
+	CALL	ZKOUT
+	LD	DE,TFSPXA
+	CALL	ZKOUT
+	LD	HL,(FSPORT)
+	CALL	PHLFDC##
+	CALL	NEWLN
+	JR	TFSPRI
+TFSPRW:	LD	A,BEEP		;Error
+	CALL	COUT##
+TFSPRI:	LD	DE,TFSPXI
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,TFSPRW	;>1
+	LD	A,(ARGN)
+	OR	A
+	JP	Z,TFRPNE	;no Input
+	LD	HL,(TARG1)	;1. Token
+	CALL	EVAL10##	;convert PORT
+	OR	D
+	JR	Z,TFSPRW	;=0: not allowed
+	LD	(FSPORT),DE
+	LD	HL,FSPORT
+	LD	DE,TFTPPT
+	CALL	HTONS		;Server-Port to NOrder
+	BIT	7,(IX)
+	JP	NZ,TFRPNE
+	;Server online -> rebind
+	CALL	NEWLN
+	LD	A,(F_SCK)	;socket
+	CALL	SHUTDN
+	CALL	SSOPEN
+	JP	TFRPNE
+	;Remote Host
+TSIPXA:	DB	'Select Remote Host',CR,LF,'$'
+TSIPXI:	DB	' Name|IP[:Port] : ','$'
+TFHSEL:	;check free socket for resolver
+	LD	A,0FFH		;any
+	LD	D,SK_DGRAM	;Mode
+	LD	E,0		;Flags
+	CALL	SOCKET		;get free Socket
+	JR	NC,TFHSST
+	;ERR: all sockets online!
+	LD	A,BEEP
+	CALL	COUT##
+	RET
+TFHSST:	CALL	CLOSE		;release Socket!
+	LD	DE,F_CIXJ
+	CALL	ZKOUT
+	LD	DE,TSIPXA
+	CALL	ZKOUT
+	JR	TFHSEI
+TFHSEW:	LD	A,BEEP		;Error
+	CALL	COUT##
+TFHSEI:	LD	DE,TSIPXI
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,TFHSEW	;>1
+	LD	A,(ARGN)
+	OR	A
+	JP	Z,TFRPNE	;no Input
+	LD	HL,(TARG1)	;host name string
+	CALL	MKHOST		;resolve and copy
+	CALL	C,NEWLN
+	CALL	C,ZKOUT		;ERR Message
+	CALL	C,WAITST	;wait
+	JP	TFRPNE
+	;Remote Folder
+TSRFXA:	DB	'Select Remote Folder \...\ or /.../ (clear with SPC)',CR,LF
+	DB	' Folder : ','$'
+TFFSEL:	LD	DE,F_CIXJ
+	CALL	ZKOUT
+	LD	DE,TSRFXA
+	CALL	ZKOUT
+	LD	A,1		;Echo ON
+	LD	HL,(FMDIRB)	;Input-BUFFER PTR
+	LD	(HL),0		;reset
+	INLINE			;Input Macro
+	XOR	A
+	CP	(HL)
+	JR	Z,TFFSEE	;no Input
+	LD	A,' '
+	CP	(HL)
+	JR	NZ,TFFSET
+	LD	HL,(RMFNBF)	;SPC
+	LD	(HL),0		;reset folder-string
+	JR	TFFSEE
+TFFSET:	CALL	TFOLDR		;test input
+	JR	C,TFFSEE	;no folder
+	LD	DE,(RMFNBF)
+	CALL	CPRFNM		;copy folder string
+TFFSEE:	JP	TFRPNE
+	
+;###### TFTP CLIENT-REQUESTS ###########################
+	;
+	;PUT FILE: - WRQ-Packet to Server from structure
+	;	   - for local DATA-flow RRQ-structure !
+	;	   - test and init 'spec'-Transfer
+TFCPUT:	;get local Filename or File-Specification
+	RES	0,(IX)		;like RRQ Server-RQ
+	CALL	SEDSCK
+	RET	C		;ERR without MSG
+	PUSH	HL
+	POP	IY		;address structure
+	CALL	DSINIT		;clear structure
+	CALL	FPNAME		;loads ERR-MSG
+	JP	C,TFCENS	;ERR Input
+	OR	A
+	JP	Z,TFCNIN	;no Input
+	;test and expand File-Spec.
+	LD	HL,XE_CM2
+	LD	(TEMP),HL
+	LD	HL,(TARG1)	;PTR to Input
+	LD	DE,SPCNAM	;PTR to 'spec'-string
+	CALL	GETSPC		;Input to 8.3+0 in SPCNAM
+	JP	C,TFCENS	;ERR CHR in Input
+	XOR	A
+	OR	(HL)		;last CHR+1 <> 0	
+	LD	HL,XE_CM3
+	LD	(TEMP),HL
+	JP	NZ,TFCENS	;too much CHR's
+	OR	C
+	JP	Z,TFCLIN	;no 'spec'
+	;check for running 'spec'
+	LD	HL,XE_CM7
+	LD	(TEMP),HL
+	LD	HL,(SPCCNT)
+	LD	A,H
+	OR	L
+	JP	NZ,TFCENS	;>0 ERR-MSG
+	;Init and start 'spec'-Transfer
+	LD	HL,SPCNAM	;'spec'-string
+	LD	DE,SPCFCB	;FCB for 'spec'-DIRQ
+	CALL	CPSTFC		;string to FCB
+	LD	HL,(FMDIRB)	;DIR PTR
+	LD	(SPCDPT),HL	;save current DIR-PTR
+	LD	BC,(FUCLNT)
+	LD	(SPCTUS),BC	;save current Client DU
+	CALL	_LOGUD		;Login Client DIR
+	LD	A,(F_SYSF)	;select Byte
+	CALL	_DIRQ		;load matching entries of current drive
+	LD	DE,XE_CM5
+	LD	(TEMP),DE
+	JP	Z,TFCENS	;ERR TPA-Overflow
+	LD	DE,XE_CM6
+	LD	(TEMP),DE
+	LD	A,B
+	OR	C
+	JP	Z,TFCENS	;ERR no matches
+	LD	(SPCPTR),HL	;Pointer to first entry
+	LD	(SPCCNT),BC	;# of entries
+	LD	D,B
+	LD	E,C
+	LD	B,H
+	LD	C,L
+	LD	HL,16
+	CALL	MULHD##
+	ADD	HL,BC
+	LD	(FMDIRB),HL	;new DIR PTR
+	LD	HL,HOSTIP
+	LD	DE,SPCHIP
+	LD	BC,6
+	LDIR			;copy current Host-IP+Port
+	LD	HL,(TDMNBF)
+	LD	DE,SPCHNM
+	CALL	CPRFNM		;copy current Hostname
+	CALL	NMSPEC		;find matching 'spec'-entry
+	JP	C,TFCENS	;ERR no matches
+	; - (SPCCNT) is counter for remaining entries!
+	; - memory from old to new (FMDIRB) is reserved!
+TFCPIN:	SET	6,(IY+F_STAT)	;'spec'-Socket ON
+	LD	A,'R'
+	LD	(SPCKEY),A	;Source-Switch on
+	JR	TFCLIN		;-> go
+	
+	;GET FILE: - RRQ-Packet to Server from structure
+	;	   - for local DATA-flow WRQ-structure !
+TFCGET:	;get local Filename
+	SET	0,(IX)		;like WRQ Server-RQ
+	CALL	SEDSCK
+	RET	C		;ERR without MSG
+	PUSH	HL
+	POP	IY		;address structure
+	CALL	DSINIT		;clear structure
+	CALL	FGNAME		;loads ERR-MSG
+	JP	C,TFCENS	;ERR Input
+	OR	A
+	JP	Z,TFCNIN	;no Input
+	;test and expand Filename
+	LD	HL,XE_CM2
+	LD	(TEMP),HL
+	LD	HL,(TARG1)	;PTR to Input
+	LD	DE,SPCNAM	;PTR to 'spec'-string
+	CALL	GETSPC		;Input to 8.3+0 in SPCNAM
+	JP	C,TFCENS	;ERR CHR in Input
+	XOR	A
+	OR	(HL)		;last CHR+1 <> 0	
+	LD	HL,XE_CM3
+	LD	(TEMP),HL
+	JP	NZ,TFCENS	;too much CHR's
+	LD	HL,XE_CM8
+	LD	(TEMP),HL
+	OR	C
+	JP	NZ,TFCENS	;ERR 'spec' in Input
+TFCLIN:	;JUMP IN: init new Socket and structure with 0,(IX) set!
+	LD	A,(IY)
+	CALL	CONNECT		;with dyn. Port
+	;set: - Info-MSG Header
+	;     - Sender Packet-Type
+	;     - expected Packet-Type recv.
+	LD	HL,F_CIXD
+	LD	DE,(TF_WRQ)	;send: WRQ-Packet
+	LD	A,(TF_ACK+1)	;recv: send DATA->recv ACK
+	BIT	0,(IX)
+	JR	Z,TFCLI2
+	LD	HL,F_CIXC
+	LD	DE,(TF_RRQ)	;send: RRQ-Packet
+	LD	A,(TF_DAT+1)	;recv: recv DATA->send ACK
+TFCLI2:	LD	(IY+F_MTXT),L
+	LD	(IY+F_MTXT+1),H
+	LD	(IY+F_DATA),E
+	LD	(IY+F_DATA+1),D
+	LD	(IY+FRPTYP+1),A
+	;copy Host-Data to Sender
+	PUSH	IY
+	POP	BC
+	LD	HL,F_PEER
+	ADD	HL,BC
+	EX	DE,HL
+	LD	HL,SPCHIP
+	LD	A,(SPCKEY)
+	CP	'R'
+	JR	Z,SPCLI1	;next 'spec' is running
+	LD	HL,HOSTIP
+SPCLI1:	PUSH	BC
+	LD	BC,6		;IP+Port 69
+	LDIR
+	POP	BC
+	;copy Hostname for Transfer-Info
+	LD	HL,F_NAME
+	ADD	HL,BC
+	EX	DE,HL
+	LD	HL,SPCHNM
+	LD	A,(SPCKEY)
+	CP	'R'
+	JR	Z,SPCLI2	;next 'spec' is running
+	LD	HL,(TDMNBF)	;PTR
+SPCLI2:	PUSH	BC
+	CALL	CPRFNM
+	POP	BC
+	;local FN from SPCNAM -> F_FCB
+	LD	HL,F_FCB
+	ADD	HL,BC
+	EX	DE,HL
+	CALL	_INITFCB
+	LD	HL,SPCNAM	;'spec'-string
+	CALL	CPSTFC		;string to FCB
+	PUSH	DE		;save F_FCB
+	;[remote] [Path+]FN -> RQ-Packet
+	PUSH	IY
+	POP	BC
+	LD	HL,F_DATA
+	ADD	HL,BC
+	PUSH	HL		;save first address
+	INC	HL
+	INC	HL
+	EX	DE,HL		;DE: FN RQ-Packet
+	LD	HL,XE_CMC
+	LD	(TEMP),HL
+	LD	HL,(RMFNBF)	;PTR remote 
+	LD	A,(HL)
+	OR	A
+	JR	Z,TFCRFN	;empty remote -> local F_FCB only
+	BIT	4,(IX)
+	JR	NZ,TFCRFM	;client Server-Menu
+	;client commandline
+	CALL	TFOLDR
+	JR	NC,TFCRFF	;folder wo FN -> folder + local F_FCB
+	LD	A,(SPCKEY)
+	CP	'R'
+	JR	Z,TFCRJE	;ERR remote Parameter
+	;test [Path+]FN
+	CALL	TSLASH		;first char
+	JR	C,TFCRNM	;no (b)slash -> copy remote FN
+	INC	HL
+	CALL	TSLASH		;second char (b)slash
+	JR	NC,TFCRJE	;ERR remote Parameter
+	PUSH	HL
+TFCRSL:	XOR	A
+	CP	(HL)
+	SCF
+	JR	Z,TFCRSE	;string-end wo second (b)slash
+	INC	HL		;next char
+	CALL	TSLASH
+	JR	C,TFCRSL
+	OR	A		;Path+FN ok
+TFCRSE:	POP	HL
+	DEC	HL		;first char
+	JR	C,TFCRJE	;ERR remote Parameter
+TFCRNM:	CALL	CPRFNM		;copy remote from cmdline
+	JR	TFCRMN		;skip local F_FCB
+TFCRJE:	POP	HL
+	POP	DE
+	JP	TFCENS		;ERR remote Parameter
+TFCRFM:	;client Server-Menu
+	CALL	TFOLDR
+	JR	C,TFCRFN	;no folder -> skip
+TFCRFF:	PUSH	BC
+	CALL	CPRFNM		;copy Folder
+	DEC	DE		;overwrite 0!
+	POP	BC
+TFCRFN:	LD	HL,F_FCB+1
+	ADD	HL,BC		;FN F_FCB to Packet-Name (ZString)
+	LD	B,8
+MZSFC1:	LD	A,(HL)
+	AND	7FH
+	CP	' '
+	JR	Z,MZSFC2
+	LD	(DE),A
+	INC	DE
+MZSFC2:	INC	HL
+	DJNZ	MZSFC1
+	LD	A,'.'
+	LD	(DE),A
+	INC	DE
+	LD	B,3
+MZSFC3:	LD	A,(HL)
+	AND	7FH
+	CP	' '
+	JR	Z,MZSFC4
+	LD	(DE),A
+	INC	DE
+MZSFC4:	INC	HL
+	DJNZ	MZSFC3
+	XOR	A
+	LD	(DE),A		;delimiter
+	INC	DE
+TFCRMN:	;test remote FN
+	LD	HL,XE_CMD
+	LD	(TEMP),HL
+	POP	HL		;first address
+	PUSH	HL
+	INC	HL
+	INC	HL		;[Path+]FN RQ-Packet
+	CALL	TSLASH		;first char
+	DEC	HL
+	JR	C,TFCRMS	;no Path
+	PUSH	DE
+	POP	HL		;FN delimiter + 1
+TFCRMW:	DEC	HL
+	CALL	TSLASH		;search (b)slash backward
+	JR	C,TFCRMW
+TFCRMS:	INC	HL		;first char FN
+	XOR	A
+	OR	(HL)
+	JR	Z,TFCMOD	;FN ok
+	CALL	CPERMC		;test not allowed chr's
+	JR	NZ,TFCRMS
+	POP	HL
+	POP	DE
+	JP	TFCENS		;ERR remote FN	
+TFCMOD:	;Mode
+	LD	HL,F_MODS
+	LD	BC,F_MSLG
+	LDIR
+	EX	DE,HL
+	POP	DE		;first address
+	OR	A
+	SBC	HL,DE		;End-Begin
+	POP	DE		;F_FCB
+	;login Client DU
+	LD	BC,(SPCTUS)
+	LD	A,(SPCKEY)
+	CP	'R'
+	JR	Z,SPCLI3	;next 'spec' is running
+	LD	BC,(FUCLNT)	;Client DIR
+SPCLI3:	LD	(IY+F_USER),C	;set User
+	LD	(IY+F_DRIV),B	;set Drive
+	CALL	_LOGUD		;Login DU
+	LD	C,L
+	LD	B,H		;BC=Packet-length
+	XOR	A
+	LD	(SPCKEY),A	;quit 'spec' REQUEST
+	BIT	0,(IX)
+	JR	Z,TFCLI3
+	;
+	;GET: test and make local File (FCB in DE)
+	LD	HL,XE_CMB
+	LD	(TEMP),HL
+	CALL	_F$WOPEN	;test File
+	PUSH	AF
+	CALL	Z,_F$CLOSE
+	POP	AF
+	JR	Z,TFCENS	;ERR File exists
+	LD	HL,XE_CMA
+	LD	(TEMP),HL
+	CALL	_F$MOPEN	;make&open File
+	JR	NZ,TFCENS	;ERR DIR full
+	;first expected BN# = 0 (DSINIT)
+	;is increased by 1 in TFSPCK !
+	;send RRQ-Packet (BC=length!)
+	CALL	TFSPCK
+	JR	TFCLI4
+	;
+TFCLI3:	;PUT: open local File (FCB in DE)
+	LD	HL,XE_CM9
+	LD	(TEMP),HL
+	CALL	_F$OPEN		;open File
+	JR	NZ,TFCENS	;ERR open
+	;set first expected BN# = FFFF
+	;is increased by 1 in TFSPCK !
+	LD	(IY+FRBNUM),0FFH
+	LD	(IY+FRBNUM+1),0FFH
+	;send WRQ-Packet (BC=length!)
+	CALL	TFSPCK
+	;Set last sent Packet-length to 4+TFBLSZ !
+	;(Dummy for length of last DATA-Packet
+	;    after first ACK from Server)
+	LD	(IY+F_SPLG),LOW(4+TFBLSZ)
+	LD	(IY+F_SPLG+1),HIGH(4+TFBLSZ)
+	;
+TFCLI4:	JR	C,TFCERF	;ERR
+	;Send OK
+	BIT	4,(IX)
+	RET	Z		;client commandline
+	SET	5,(IX)		;update Server Menu
+	RET
+TFCERF:	;Host offline - close (and del) local File
+	LD	HL,XE_CM4
+	LD	(TEMP),HL
+	PUSH	IY
+	POP	BC
+	LD	HL,F_FCB
+	ADD	HL,BC
+	EX	DE,HL
+	CALL	_F$CLOSE
+	BIT	0,(IX)		;made new file ?
+	CALL	NZ,_F$DELETE	;->DEL
+TFCENS:	;CLIENT ERR-MSG to CON:
+	LD	A,(IY)
+	CALL	SHUTDN		;switch offline
+	SET	7,(IY+F_STAT)	;ERR-Bit ON
+	OR	A
+	RET
+TFCNIN:	;no Input in Server-Menu
+	SET	5,(IX)		;update Server Menu
+	LD	A,(IY)
+	CALL	CLOSE		;release Socket
+	LD	(IY),0FFH	;release structure
+	OR	A
+	RET
+	
+	;get local F.T or F.T-'spec'
+	;PO: (TARG1) - address of F.T
+	;       CY=1 - ERR
+	;        A=0 - no Input
+FPTNAM:	DB	'Put local File(s) to Host: ','$'
+FGTNAM:	DB	'Get local File from Host: ','$'
+FPNAME:	LD	DE,FPTNAM
+	JR	FINAME
+FGNAME:	LD	DE,FGTNAM
+FINAME:	LD	HL,XE_CM1	;Input-ERR
+	LD	(TEMP),HL
+	LD	HL,LCFNBF	;local commandline - F.T 
+	LD	(TARG1),HL	;preload address
+	LD	A,(IX)
+	AND	10H		;CY=0!
+	LD	A,1		;A=1->from commandline
+	RET	Z		;client commandline
+	LD	HL,(TDMNBF)	;PTR
+	XOR	A
+	OR	(HL)
+	JR	NZ,FINAMI
+	LD	HL,F_CIXM	;Input Host
+	LD	(TEMP),HL	;ERR-MSG	
+	SCF
+	RET
+FINAMI:	PUSH	DE
+	LD	DE,F_CIXJ
+	CALL	ZKOUT
+	POP	DE
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT		;loads (TARG1) with F.T address
+	RET	C		;ERR Input
+	LD	A,(ARGN)
+	RET			;A=0->no Input
+
+;###### TFTP SERVER-REQUESTS ###########################
+	;Receiver of running Server-Socket got Packet
+TFSERV:	LD	B,D		;Rec.-Size from SELECT
+	LD	C,E		;->BC
+	LD	HL,(LINEBF)
+	LD	DE,FSRVIP	;Peer-Data
+	CALL	RECVFR		;receive
+	LD	HL,FHSVDS
+	LD	DE,FSRVDS
+	CALL	NTOHS		;DataSize to HOrder
+	LD	DE,(FHSVDS)
+	LD	HL,4+TFBLSZ	;max. Header + STD-BlockSize
+	OR	A
+	SBC	HL,DE
+	RET	C		;too big
+	LD	HL,2+2+6	;OCD/NM+0/MD+0
+	EX	DE,HL
+	SBC	HL,DE
+	RET	C		;too small
+	;check Request and Packet-Type
+	LD	HL,(LINEBF)
+	PUSH	HL
+	LD	DE,TF_RRQ
+	CALL	CMP2BT
+	POP	HL
+	RES	0,(IX)		;RRQ
+	JR	Z,TFSER1
+	LD	DE,TF_WRQ
+	CALL	CMP2BT
+	RET	NZ		;ignore other Packets
+	SET	0,(IX)		;WRQ
+TFSER1:	;get and init Socket with structure
+	CALL	SEDSCK
+	RET	C		;no Sockets free
+	PUSH	HL
+	POP	IY		;address structure
+	LD	A,(HL)
+	CALL	CONNECT		;with dyn. Port
+	CALL	DSINIT
+	;set: - Info-MSG Header
+	;     - Sender Packet-Type
+	;     - expected Packet-Type recv.
+	LD	HL,F_CIXA
+	LD	DE,(TF_DAT)
+	LD	A,(TF_ACK+1)	;RRQ: send DATA->recv ACK
+	BIT	0,(IX)
+	JR	Z,TFSER2
+	LD	HL,F_CIXB
+	LD	DE,(TF_ACK)
+	LD	A,(TF_DAT+1)	;WRQ: recv DATA->send ACK
+TFSER2:	LD	(IY+F_MTXT),L
+	LD	(IY+F_MTXT+1),H
+	LD	(IY+F_DATA),E
+	LD	(IY+F_DATA+1),D
+	LD	(IY+FRPTYP+1),A
+	;copy Peer-Data to Sender
+	PUSH	IY
+	POP	HL
+	LD	DE,F_PEER
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,FSRVIP
+	LD	BC,6		;IP+Port of RQ
+	LDIR	
+	;local FN from RQ-Packet -> F_FCB
+	LD	(IY+F_EMSG),LOW(XE_SM1)
+	LD	(IY+F_EMSG+1),HIGH(XE_SM1)
+	LD	HL,(LINEBF)
+	INC	HL
+	INC	HL
+	LD	DE,PCKNAM
+	CALL	GETSPC		;make F.T+0 in PCKNAM
+	JP	C,TFSER6	;ERR CHR in FN 
+	XOR	A
+	OR	(HL)		;last CHR+1 <> 0	
+	JP	NZ,TFSER6	;too much CHR's
+	OR	C
+	JP	NZ,TFSER6	;? or * found
+	PUSH	HL
+	PUSH	IY
+	POP	HL
+	LD	DE,F_FCB
+	ADD	HL,DE
+	EX	DE,HL
+	CALL	_INITFCB
+	LD	HL,PCKNAM
+	CALL	CPSTFC		;string to F_FCB (DE)
+	POP	HL
+	;login Server DU
+	LD	BC,(FUROOT)	;Server DIR
+	LD	(IY+F_USER),C	;save User Area
+	LD	(IY+F_DRIV),B	;save Drive
+	CALL	_LOGUD		;Login
+	;Mode
+	INC	HL
+	LD	(IY+F_EMSG),LOW(XE_SM2)
+	LD	(IY+F_EMSG+1),HIGH(XE_SM2)
+	LD	A,F_MSLG
+	LD	B,H
+	LD	C,L
+	LD	HL,F_MODS
+TFSER3:	EX	AF,AF'
+	LD	A,(BC)
+	AND	0DFH		;UCASE
+	CP	(HL)
+	INC	BC
+	INC	HL
+	JR	NZ,TFSER6	;Mode<>OCTET
+	EX	AF,AF'
+	DEC	A
+	JR	NZ,TFSER3
+	;IQuery Hostname with (closed!) Data-Socket
+	PUSH	DE		;F_FCB
+	LD	A,(IY)
+	CALL	CLOSE
+	PUSH	IY
+	POP	HL
+	LD	DE,F_NAME
+	ADD	HL,DE
+	EX	DE,HL
+	PUSH	DE
+	LD	HL,FSRVIP	;Host-IP
+	CALL	I_NTOA		;->IP-STRING->F_NAME
+	LD	DE,(DMNBUF)
+	PUSH	DE
+	LD	BC,4
+	LDIR			;Host-IP->(DMNBUF)
+	POP	DE
+	LD	HL,(LINEBF)
+	CALL	GHBADR		;try iquery:(DE)IP->(DE)Name
+	EX	DE,HL
+	POP	DE
+	CALL	NC,CPRFNM	;Name->F_NAME
+	LD	A,(IY)		;reopen
+	LD	D,SK_DGRAM	;Mode
+	LD	E,0		;Flags
+	CALL	SOCKET		;reopen
+	CALL	CONNECT		;with dyn. Port
+	POP	DE		;F_FCB
+	BIT	0,(IX)
+	JR	Z,TFSER4
+	;
+	;WRQ (FCB in DE)
+	LD	(IY+F_EMSG),LOW(XE_FLEX)
+	LD	(IY+F_EMSG+1),HIGH(XE_FLEX)
+	CALL	_F$WOPEN	;test File
+	JR	Z,TFSER5	;ERR File exists
+	LD	(IY+F_EMSG),LOW(XE_DSKF)
+	LD	(IY+F_EMSG+1),HIGH(XE_DSKF)
+	CALL	_F$MOPEN	;make&open File
+	JR	NZ,TFSER6	;ERR DIR full
+	;first ACK-Packet BN# always 0 (DSINIT)
+	;send first ACK-Packet
+	LD	BC,4		;ACK-length
+	JP	TFSPCK
+	;
+TFSER4:	;RRQ (FCB in DE)
+	LD	(IY+F_EMSG),LOW(XE_FLNF)
+	LD	(IY+F_EMSG+1),HIGH(XE_FLNF)
+	CALL	_F$OPEN		;open File
+	JR	NZ,TFSER6	;ERR open
+	;set first DATA-Packet BN# = 1
+	LD	(IY+F_DATA+3),1
+	;read and send first DATA-Packet
+	PUSH	IY
+	POP	BC
+	JP	TFDARI
+
+TFSER5:	;close opened file
+	CALL	_F$CLOSE	;close open File
+TFSER6:	;send ERR-Packet over connected! Data-Socket to Peer
+	CALL	TFERRP
+	;close Transfer
+	LD	A,(IY)
+	CALL	CLOSE		;release socket !
+	LD	(IY),0FFH	;release structure !
+	RET
+	
+;###### TFTP DATA-PACKET PROGRAMS ######################
+	;
+;  ! IY contains always address of current structure !
+	;
+	;Init structure RAM, Info-Timer and TID-Copy
+DSINIT:	PUSH	IY
+	POP	HL
+	INC	HL		;retain F_SCKD
+	LD	BC,FSCKLG-1
+	CALL	CLRMEM
+	CALL	N_TIME
+	LD	(IY+F_LTIO),L
+	LD	(IY+F_LTIO+1),H
+	SET	0,(IY+F_STAT)	;TID Copy-Bit ON
+	RET
+	
+	;set rd/wr-Bit DATA-Transfer
+DRWSET:	LD	A,(TF_ACK+1)
+	CP	(IY+FRPTYP+1)
+	RES	0,(IX)		;read FILE -> NET
+	RET	Z
+	SET	0,(IX)		;write NET -> FILE
+	RET
+	
+	;Receiver of current DATA-Socket got Packet
+TFDATA:	LD	B,D		;Rec.-Size from SELECT
+	LD	C,E		;->BC
+	PUSH	IY
+	POP	DE
+	LD	HL,FRPEER
+	ADD	HL,DE
+	EX	DE,HL		;Peer-Data
+	LD	HL,(LINEBF)	;Data
+	CALL	RECVFR
+	PUSH	IY
+	POP	BC
+	;check Packet-Length
+	LD	HL,FRNSIZ
+	ADD	HL,BC
+	LD	D,H
+	LD	E,L		;DE-FRNSIZ
+	INC	HL
+	INC	HL		;HL-FRHSIZ
+	CALL	NTOHS		;DataSize to HOrder
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	LD	HL,4+TFBLSZ	;Header+Standard DataSize	
+	OR	A
+	SBC	HL,DE
+	RET	C		;too big
+	LD	HL,4
+	EX	DE,HL
+	SBC	HL,DE
+	RET	C		;too small
+	;check for TID-Copy
+	BIT	0,(IY+F_STAT)
+	JR	Z,TFDAT1	;no
+	LD	HL,F_PORT
+	ADD	HL,BC
+	EX	DE,HL
+	LD	HL,FRPORT	;RECV TID ->
+	ADD	HL,BC
+	PUSH	BC
+	LDI
+	LDI			;= next send TID
+	POP	BC
+	RES	0,(IY+F_STAT)	;quit
+TFDAT1:	;check RECV-PEER
+	LD	HL,F_PEER	;SEND PEER+PORT
+	ADD	HL,BC
+	EX	DE,HL
+	LD	HL,FRPEER	;RECV PEER+PORT
+	ADD	HL,BC
+	PUSH	BC
+	CALL	CMP6BT
+	POP	BC
+	RET	NZ		;<>
+	CALL	DRWSET
+TFDAT2:	;check expected Packet-Type
+	LD	DE,(LINEBF)
+	PUSH	DE
+	LD	HL,FRPTYP
+	ADD	HL,BC
+	PUSH	HL
+	PUSH	BC
+	CALL	CMP2BT
+	POP	BC
+	POP	HL
+	POP	DE
+	JR	Z,TFDAT3
+	;check for ERROR-Packet
+	LD	HL,TF_ERR
+	CALL	CMP2BT
+	EX	DE,HL		;(HL) Packet-ErrorCode
+	JP	Z,TFDERR
+	RET			;drop all other Packet-Types
+TFDAT3:	;check expected BN#
+	LD	HL,FRBNUM
+	ADD	HL,BC
+	INC	DE
+	INC	DE		;(DE)-BN# Packet
+	PUSH	BC
+	CALL	CMP2BT
+	POP	BC		;(DE)-Data Packet
+	RET	NZ		;<> ignore Packet
+	PUSH	BC
+	LD	C,(IY+F_USER)	;get User
+	LD	B,(IY+F_DRIV)	;get Drive
+	CALL	_LOGUD		;Login DU
+	POP	BC
+	BIT	0,(IX)
+	JR	Z,TFDATR
+	;
+TFDATW:	;write NET -> FILE
+	LD	(IY+F_EMSG),LOW(XE_DSKF)
+	LD	(IY+F_EMSG+1),HIGH(XE_DSKF)
+	LD	HL,FRHSIZ
+	ADD	HL,BC
+	LD	A,(HL)
+	INC	HL
+	LD	H,(HL)
+	LD	L,A		;HL-HDataSize
+	DEC	HL
+	DEC	HL
+	DEC	HL
+	DEC	HL		;Size=HDataSize-Headersize	
+	LD	A,H
+	OR	L
+	JR	Z,TFDAW3	;=0: Skip Save
+TFDAW1:	PUSH	BC		;HL-Size/(DE)-Data
+	LD	BC,128		;1 Record
+	OR	A
+	SBC	HL,BC
+	JR	NC,TFDAW2
+	;fill with EOF
+	ADD	HL,BC
+	PUSH	DE
+	EX	DE,HL
+	ADD	HL,DE
+	LD	A,128
+	SUB	E
+	LD	B,A
+	LD	A,01AH
+	CALL	FILLB##
+	LD	HL,0		;ready
+	POP	DE
+TFDAW2:	POP	BC
+	PUSH	BC
+	PUSH	DE		;Data
+	PUSH	HL		;Size
+	LD	HL,F_FCB
+	ADD	HL,BC
+	EX	DE,HL		;(HL)Data/(DE)FCB
+	CALL	_SETDMA
+	CALL	_F$WRITE	;write DMA
+	POP	DE		;Size
+	POP	HL		;Data
+	LD	BC,128
+	ADD	HL,BC		;next Record
+	EX	DE,HL		;restore
+	POP	BC	
+	JP	NZ,TFSERR	;ERR write
+	LD	A,H
+	OR	L		;ready?
+	JR	NZ,TFDAW1
+TFDAW3:	;next Block# Sender-Packet
+	CALL	TFDANB		;loads HL with F_DATA+2 !
+	;check last sent Packet-Type
+	DEC	HL
+	LD	A,(TF_RRQ+1)
+	CP	(HL)
+	JR	NZ,TFDAW4
+	;make Sender Packet-Type to ACK and BN# = 1
+	LD	A,(TF_ACK+1)
+	LD	(HL),A
+	INC	HL
+	LD	(HL),0
+	INC	HL
+	LD	(HL),1	
+TFDAW4:	;send next ACK-Packet
+	PUSH	BC
+	LD	BC,4		;ACK-length
+	CALL	TFSPCK
+	POP	BC
+	;test Transfer-End (received DataSize<512)
+	LD	HL,FRHSIZ
+	CALL	TFDATE
+	JP	C,TFDEND	;OK: close Transfer
+	RET
+	;
+TFDATR:	;read FILE -> NET
+	LD	(IY+F_EMSG),LOW(XE_ACVL)
+	LD	(IY+F_EMSG+1),HIGH(XE_ACVL)
+	;test Transfer-End (last sent DataSize<512)
+	LD	HL,F_SPLG
+	CALL	TFDATE
+	JP	C,TFDEND	;OK: close Transfer
+	;next Block# Sender-Packet
+	CALL	TFDANB		;loads HL with F_DATA+2 !
+	;check last sent Packet-Type
+	DEC	HL
+	LD	A,(TF_WRQ+1)
+	CP	(HL)
+	JR	NZ,TFDARI
+	;make Sender Packet-Type to DATA and BN# = 1
+	LD	A,(TF_DAT+1)
+	LD	(HL),A
+	INC	HL
+	LD	(HL),0
+	INC	HL
+	LD	(HL),1	
+TFDARI:	;Jump-In read file and send DATA-Packet (PI: BC=IY)
+	LD	HL,F_FCB
+	ADD	HL,BC
+	EX	DE,HL		;DE-FCB
+	LD	HL,F_DATA+4
+	ADD	HL,BC		;destination for FileData
+	;read Filedata
+	LD	BC,00400H	;max. 4 Records
+TFDAR1:	CALL	_SETDMA
+	CALL	_F$READ		;read DMA
+	PUSH	BC		;Data
+	LD	BC,128
+	ADD	HL,BC		;next Record
+	POP	BC	
+	JR	Z,TFDAR2	;read OK
+	DEC	A
+	JR	Z,TFDAR3	;read EOF
+	POP	BC
+	JP	TFSERR		;ERR read
+TFDAR2:	INC	C		;read Records + 1
+	DJNZ	TFDAR1
+TFDAR3:	;calc Packet-Length
+	LD	A,C		;retain read Records
+	LD	HL,0		;Data
+	LD	DE,4		;Header
+	INC	A
+	DEC	A
+	JR	Z,TFDAR5	;read Records = 0
+	LD	BC,128
+TFDAR4:	ADD	HL,BC		;+ read Record
+	DEC	A
+	JR	NZ,TFDAR4
+TFDAR5:	ADD	HL,DE		;+Header
+	LD	B,H
+	LD	C,L	
+	;send next DATA-Packet
+	JP	TFSPCK
+	;
+TFDANB:	;increase Block# Sender-Packet
+	LD	HL,F_DATA+2
+	ADD	HL,BC
+	LD	D,(HL)		;NOrder!
+	INC	HL
+	LD	E,(HL)
+	INC	DE		;BN#=BN#+1
+	LD	(HL),E
+	DEC	HL
+	LD	(HL),D
+	RET
+	;
+TFDATE:	;calc. Transfer End
+	ADD	HL,BC
+	LD	A,(HL)
+	INC	HL
+	LD	H,(HL)
+	LD	L,A		;HL-HDataSize
+	LD	DE,4+TFBLSZ	;Header+Standard DataSize	
+	OR	A
+	SBC	HL,DE
+	RET
+	
+TFDERR:	;parse received ERROR-Packet
+	;(HL)-ErrorCode
+	LD	B,LOW(XE_TLG/2)
+	LD	C,0
+	LD	DE,XE_TAB
+	XOR	A
+	CP	(HL)
+	JR	NZ,TFDER3	;HWB<>0 ?
+	INC	HL
+TFDER1:	LD	A,C
+	CP	(HL)
+	JR	Z,TFDER2	;NWB-Nr. OK
+	INC	DE
+	INC	DE
+	INC	C
+	DJNZ	TFDER1
+	LD	DE,XE_TAB
+	JR	TFDER3		;unknown ERR-Code
+TFDER2:	XOR	A
+	OR	C
+	JR	Z,TFDER4
+	;ERR1...
+TFDER3:	EX	DE,HL		;HL: ADR ERR-String
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)		;DE: ERR-String+0
+	JR	TFDER5
+	;ERR0
+TFDER4:	INC	HL
+	EX	DE,HL		;DE: ERR-String+0
+TFDER5:	LD	(IY+F_EMSG),E
+	LD	(IY+F_EMSG+1),D	;load ERR Message
+	JR	TFMERR		;-> ERR-close without ERR-Packet
+	;
+TFSERR:	;close Transfer with ERR-MSG and ERR-Packet to Peer
+	CALL	TFERRP		;-> ERR-Packet to Peer
+TFMERR:	;close Transfer with ERR-MSG
+	SET	5,(IY+F_STAT)	;ERR-Bit ON
+	JR	TFDEN1
+TFDEND:	SET	4,(IY+F_STAT)	; OK-Bit ON
+TFDEN1:	;switch offline
+	LD	A,(IY)
+	CALL	SHUTDN
+	;close (and DEL) local File
+	PUSH	IY
+	POP	BC
+	LD	HL,F_FCB
+	ADD	HL,BC
+	EX	DE,HL
+	CALL	_F$CLOSE	;close open File
+	JR	NZ,TFDEN2	;ERR F$CLOS -> DEL
+	BIT	5,(IY+F_STAT)	;ERR ?
+	RET	Z		;no
+TFDEN2:	BIT	0,(IX)		;wrote Data ?
+	CALL	NZ,_F$DELETE	;-> DEL
+	RET
+
+TFERRP:	;make ERR-Packet (always Type 0!)
+	;send over connected! Data-Socket to Peer
+	PUSH	IY
+	POP	HL
+	LD	DE,F_DATA
+	ADD	HL,DE
+	EX	DE,HL
+	PUSH	DE		;DATA
+	LD	HL,TF_ERR
+	LDI
+	LDI
+	EX	DE,HL
+	LD	(HL),0
+	INC	HL
+	LD	(HL),0		;ERR-Code
+	INC	HL
+	EX	DE,HL
+	LD	L,(IY+F_EMSG)
+	LD	H,(IY+F_EMSG+1)
+TFERR1:	LDI			;ERR-MSG
+	XOR	A
+	OR	(HL)		;CY=0
+	JR	NZ,TFERR1
+	LDI			;0-Byte
+	EX	DE,HL		;HL-EADR
+	POP	DE		;DATA
+	SBC	HL,DE
+	LD	B,H
+	LD	C,L		;Packet length
+	;
+TFSPCK:	; - send Packet from structure
+	; - set Timer
+	; - increase expected BN#
+	;PI:   BC - Packet length
+	;PO: CY=1 - SENDTO-Error
+	PUSH	BC
+	PUSH	IY
+	POP	BC
+	LD	HL,F_PEER
+	ADD	HL,BC		;Peer Data
+	EX	DE,HL
+	LD	HL,F_DATA
+	ADD	HL,BC		;Packet Data
+	POP	BC
+	LD	(IY+F_SPLG),C
+	LD	(IY+F_SPLG+1),B	;size last packet HOrder
+	LD	A,(IY)		;Socket
+	CALL	SENDTO		;ERR: CY=1
+	PUSH	AF
+	CALL	N_TIME
+	LD	(IY+F_TIME),L
+	LD	(IY+F_TIME+1),H
+	LD	(IY+F_TRPT),L
+	LD	(IY+F_TRPT+1),H
+	PUSH	IY
+	POP	HL
+	LD	DE,FRBNUM
+	ADD	HL,DE
+	LD	D,(HL)		;NOrder!
+	INC	HL
+	LD	E,(HL)
+	INC	DE		;BN#=BN#+1
+	LD	(HL),E
+	DEC	HL
+	LD	(HL),D
+	POP	AF
+	RET
+
+	;repeat last sent Packet
+TFREPT:	LD	A,(IY)		;socket
+	LD	E,SL_STAT
+	CALL	SELECT
+	INC	E
+	DEC	E
+	RET	Z		;socket offline
+	PUSH	IY
+	POP	DE
+	LD	HL,F_PEER	
+	ADD	HL,DE
+	EX	DE,HL		;Peer Data
+	LD	BC,F_DATA
+	ADD	HL,BC		;last Packet
+	LD	C,(IY+F_SPLG)
+	LD	B,(IY+F_SPLG+1)	;length HOrder
+	CALL	SENDTO		;repeat packet
+	CALL	N_TIME		;get NOW
+	LD	(IY+F_TRPT),L
+	LD	(IY+F_TRPT+1),H	;=last repeat
+	RET	
+
+;###### TRANSFER MESSAGES TO CON: ######################
+	;
+	;test and do Transfer-Info with Timing
+TSINFO:	LD	A,(IY)		;socket
+	LD	E,SL_STAT
+	CALL	SELECT
+	INC	E
+	DEC	E
+	RET	Z		;socket offline
+	;check last kB-Counter
+	LD	B,(IY+FRBNUM)
+	LD	C,(IY+FRBNUM+1)	;expected BLK# (NOrder!)
+	LD	A,(IY+FRPTYP+1)	;Opcode Receiver (NOrder!)
+	SUB	3		;receive Data ?
+	JR	NZ,TSINF1
+	DEC	BC		;if rec. Data, expected-1
+TSINF1:	SRL	B
+	RR	C		;BLK#/2 = kB-Counter
+	LD	L,(IY+F_LSZC)
+	LD	H,(IY+F_LSZC+1)
+	OR	A
+	SBC	HL,BC
+	LD	(IY+F_LSZC),C
+	LD	(IY+F_LSZC+1),B	;save kB-Counter
+	JR	NZ,TSINF2	;<> -> Info Out
+	;check Timer 
+	LD	E,(IY+F_LTIO)
+	LD	D,(IY+F_LTIO+1)	;Timer last IOut
+	CALL	CALCTD		;HL=Time-Diff.
+	LD	DE,1000		;min. IOut-Intervall
+	OR	A
+	SBC	HL,DE
+	RET	C		;wait
+TSINF2:	CALL	FINOUT
+	;check Timeout
+	CALL	N_TIME		;get NOW
+	LD	(IY+F_LTIO),L
+	LD	(IY+F_LTIO+1),H	;=last IOut
+	LD	E,(IY+F_TIME)
+	LD	D,(IY+F_TIME+1)
+	CALL	CALCTU		;NOW-last packet
+	EX	DE,HL
+	LD	HL,1000
+	SBC	HL,DE
+	JR	C,TSINF3	;>1s
+	LD	DE,F_CIXI	;clear Wait-Info !
+	JR	TSINF4
+TSINF3:	LD	HL,(F_TMO)
+	OR	A
+	SBC	HL,DE		;Timeout-Diff.
+	LD	DE,1000
+	CALL	DIVHD##
+	LD	DE,F_CIXG	;' (Wait: '
+	CALL	ZKOUT
+	CALL	PHLFDC##
+	LD	DE,F_CIXH	;' s)'
+TSINF4:	CALL	ZKOUT
+	RET
+
+	;File Info Out
+FINOUT:	LD	A,CR
+	CALL	COUT##
+	LD	E,(IY+F_MTXT)
+	LD	D,(IY+F_MTXT+1)
+	CALL	ZKOUT		;Header
+	PUSH	IY
+	POP	DE
+	LD	HL,F_NAME
+	ADD	HL,DE
+	EX	DE,HL
+	CALL	ZKOUT		;Hostname
+	LD	DE,F_CIXE
+	CALL	ZKOUT		;': '
+	LD	DE,F_FCB+1	
+	ADD	HL,DE
+	EX	DE,HL
+	CALL	_PFN2		;FN
+	LD	A,' '
+	CALL	COUT##
+	LD	L,(IY+F_LSZC)
+	LD	H,(IY+F_LSZC+1)
+	CALL	PHLFDC##	;kB-Counter
+	LD	DE,F_CIXF
+	CALL	ZKOUT		;' kb '
+	RET
+
+EMCOUT:	;ERR-MSG Client
+	BIT	4,(IX)
+	CALL	Z,NEWLN		;commandline
+	LD	DE,F_CIXJ
+	CALL	NZ,ZKOUT	;Server Menu
+	LD	BC,(TEMP)	;Client MSG
+	CALL	EMMOU2
+	RET	Z		;commandline
+EMCOUI:	CALL	WAITST		;wait
+	RET
+
+EMDOUT:	;ERR-MSG DATA-Socket
+	LD	A,CLLN
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	LD	A,CR		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	LD	C,(IY+F_EMSG)
+	LD	B,(IY+F_EMSG+1)	;DATA-Socket MSG
+	CALL	EMMOU1
+	BIT	4,(IX)
+	JR	NZ,EMCOUI	;Server Menu
+	RET
+	
+EMMOU1:	PUSH	AF
+	LD	A,' '
+	CALL	COUT##
+	PUSH	IY
+	POP	HL
+	LD	DE,F_FCB+1	
+	ADD	HL,DE
+	EX	DE,HL
+	CALL	_PFN2		;FN
+	LD	A,':'
+	CALL	COUT##
+	POP	AF
+EMMOU2:	PUSH	AF
+	LD	A,' '
+	CALL	COUT##
+	LD	E,C
+	LD	D,B		;ERR-MSG
+	CALL	ZKOUT
+	LD	A,BEEP
+	CALL	COUT##
+	CALL	COUT##
+	CALL	COUT##
+	POP	AF
+	RET
+	
+;#######################################################
+;### TFTP START ########################################
+;#######################################################
+	;check for ZSDOS/ZDDOS and CP/M 2+
+BEGIN:	LD	C,CPMVER
+	CALL	BDOS
+	LD	(SYSVER),A	;CP/M version
+	AND	0F0H		;version 2+ required
+	CP	20H
+	LD	DE,CPMERR
+	CALL	C,ZKOUT
+	JP	C,TFQUIT
+	LD	A,(SYSVER)
+	CP	22H
+	JR	NZ,NLDTZD	;not CP/M 2.2
+	LD	C,CPMEXV
+	CALL	BDOS
+	LD	A,H
+	CP	'S'
+	JR	Z,LOADEC
+	CP	'D'
+	JR	NZ,NLDTZD
+LOADEC:	;ZSDOS/ZDDOS
+	PUSH	AF
+	LD	C,GTCFLG	;get config flags
+	CALL	BDOS
+	LD	(EXTCFG),HL
+	LD	E,07EH
+	LD	C,STBEMD	;set BDOS error-mode
+	CALL	BDOS		;(reseted in WBOOT!)
+	POP	AF
+	JR	LOADDV
+NLDTZD:	XOR	A		;not ZSDOS/ZDDOS
+LOADDV:	LD	(EXTVER),A	;extended CP/M version
+	LD	SP,STACK	;set local stack
+	;parse and test ARG's
+	;
+	;because Network Hardware-Driver is not initialized
+	; here, do not call hardware-related API functions,
+	;    only functions for CONVERSION are allowed!
+	;
+	LD	HL,DMA+1
+	LD	DE,ARGMAX	;ARG-Table for max. 9 arg's
+	XOR	A
+	INC	A		;terminate Parameter with 0 
+	CALL	ARGV##		;parse ARG's
+	LD	DE,F_CMXA	;too many ARG's
+	JR	Z,TFTPC1
+ETXOUT:	CALL	ZKOUT
+	JP	T_ENDE
+TFTPC1:	;load and reset state
+	LD	IX,TFSTAT
+	LD	(IX),0
+	LD	A,(ARGN)
+	OR	A
+	JR	NZ,TFTPC2
+	SET	1,(IX)		;no ARG's -> show version
+	JP	F_OEND		;skip parser
+TFTPC2:	;allocate memory
+	XOR	A		;full TPA (from End-Address TFTP to CCP-1)
+	CALL	IALLOC##
+	LD	DE,256		;remote path(+name) name buffer
+	CALL	ALLOC##
+	LD	DE,F_CMXD
+	JR	Z,ETXOUT
+	LD	(RMFNBF),HL
+	LD	(HL),0		;reset remote namestring
+	LD	DE,256		;tftp domain name buffer
+	CALL	ALLOC##
+	LD	DE,F_CMXD
+	JR	Z,ETXOUT
+	LD	(TDMNBF),HL
+	LD	(HL),0		;reset hoststring
+	LD	DE,256		;domain name buffer
+	CALL	ALLOC##
+	LD	DE,F_CMXD
+	JR	Z,ETXOUT
+	LD	(DMNBUF),HL
+	LD	DE,MAXMTU	;udp packet buffer
+	CALL	ALLOC##
+	LD	DE,F_CMXD
+	JP	Z,ETXOUT
+	LD	(LINEBF),HL
+	;test arg's
+	LD	HL,TARG1	;address of ARG-PTR tab
+	LD	(TEMP),HL
+	CALL	GETARG		;get first ARG address
+	JR	TFTPC4
+TFTPC3:	CALL	CNTARG		;count & get next ARG
+	JP	Z,F_OEND	;all ARG's parsed
+TFTPC4:	LD	A,'-'
+	CP	(HL)
+	JR	NZ,F_KEYF	;no option('s)
+	INC	HL
+	LD	C,(HL)		;option char
+	INC	HL
+	;option string
+TFTPC5:	XOR	A
+	OR	C		;string end?
+	JR	Z,TFTPC3	;next ARG
+	AND	0DFH		;ucase
+	CP	'V'		;version
+	JR	NZ,F_OST1
+	SET	1,(IX)
+F_OST1:	CP	'H'		;help
+	JR	NZ,F_OST2
+	SET	0,(IX)
+F_OST2:	LD	C,(HL)		;next char
+	INC	HL
+	JR	TFTPC5		;next option
+F_KEYF:	;test keyword: HL=PTR
+	EX	DE,HL
+	LD	B,3		;3 Keywords
+	LD	HL,WKEYTB	;Z-String tab
+CMPKEY:	PUSH	DE
+CMPKE1:	LD	A,(DE)
+	INC	DE		;next chr Key
+	AND	0DFH		;ucase
+	JR	Z,CMPKE3	;KeyEnd
+	PUSH	BC
+	CPI
+	POP	BC
+	JR	Z,CMPKE1	;= -> next chr Z-String
+	XOR	A
+CMPKE2:	CP	(HL)
+	INC	HL
+	JR	NZ,CMPKE2	;search Z-String end
+	POP	DE		;restore Key
+	DJNZ	CMPKEY
+	SET	2,(IX)		;no Keyword
+	JP	F_OEND
+CMPKE3:	POP	DE		;Keyword found
+	DEC	B
+	JR	NZ,KEYCLT
+	;server
+	SET	4,(IX)	
+	CALL	CNTARG		;HL=DU|DIR[:port]
+	JR	Z,F_OEND	;no DU|DIR[:port] / Host
+	CALL	_RETUD
+	LD	(FUROOT),BC	;current DU:
+	;try DIR|DU: and inc. PTR
+	CALL	TSTDIR
+	JR	NC,KEYSVL
+	LD	BC,(FUROOT)	;current DU:
+	CALL	TSTDRU
+	JR	C,KEYSVC
+KEYSVL:	LD	(FUROOT),BC	;new DU:
+	CALL	TDUEND
+	CP	':'
+	JR	NZ,KEYSVC	;no port
+	;local server-port
+	INC	HL
+	CALL	EVAL10##	;convert PORT
+	OR	D
+	JR	Z,KEYSVC	;=0: not allowed
+	LD	(FSPORT),DE
+	LD	HL,FSPORT
+	LD	DE,TFTPPT
+	CALL	HTONS		;->to NOrder
+KEYSVC:	CALL	CNTARG		;HL=host
+	JR	Z,F_OEND	;no host
+	LD	DE,(TDMNBF)
+	CALL	CPRFNM		;copy host[:port]
+	JR	F_OEND
+KEYCLT:	;client
+	DEC	B	
+	JR	NZ,KEYCGT
+	SET	3,(IX)		;put
+KEYCGT:	CALL	CNTARG		;HL=host[:port]
+	LD	DE,F_CMXE
+	JP	Z,ETXOUT	;no host[:port]
+	LD	DE,(TDMNBF)
+	CALL	CPRFNM		;copy host[:port]
+	CALL	CNTARG		;HL=local filename
+	LD	DE,F_CMXF
+	JP	Z,ETXOUT	;no local filename
+	LD	DE,LCFNBF
+	CALL	CPLFNM		;copy local filename
+	CALL	CNTARG		;HL=remote
+	JR	Z,F_OEND	;no remote
+	LD	DE,(RMFNBF)
+	CALL	CPRFNM		;copy remote
+;------ command parsed -> execute ----------------------
+F_OEND:	BIT	0,(IX)
+	LD	DE,TF_HLP
+	JP	NZ,ETXOUT	;show Help and exit
+	BIT	1,(IX)
+	CALL	NZ,TFTVER	;show Version
+	JP	NZ,T_ENDE	;and exit
+	BIT	2,(IX)
+	LD	DE,F_CMXG
+	JP	NZ,ETXOUT	;no Keyword
+;-------init and test Network --------------------------
+	;try Network init
+	XOR	A		;DRV->KOP (required only for KC85)
+	CALL	N_INIT
+	CALL	C,ZKOUT		;->DE=ERR-string
+	CALL	C,NEWLN
+	LD	DE,TFTHT2
+	JP	C,ETXOUT	;show "-h" and exit
+	;network available
+	CALL	NETTST		;configured?
+	JP	C,T_ENDE
+	CALL	ONTEST		;online?
+	JP	C,T_ENDE
+;------ save current DU: and optional host -------------
+	CALL	_PUTUD		;save current DU for exit
+	CALL	_RETUD
+	LD	(FUCLNT),BC	;load Client with current DU:
+	LD	HL,(TDMNBF)	;host name string
+	XOR	A
+	OR	(HL)
+	JR	Z,SSINIT	;server: no host
+	CALL	MKHOST		;resolve client host[:port]
+	CALL	C,ZKOUT		;ERR Message from MKHOST
+	JP	C,T_ENDE
+	BIT	4,(IX)
+	JR	Z,DSAMEM	;client commandline
+;------ init server socket -----------------------------
+SSINIT:	LD	A,0FFH		;any
+	LD	D,SK_DGRAM	;Mode
+	LD	E,0		;Flags
+	CALL	SOCKET
+	LD	DE,F_CMXB	;socket-error
+	JP	C,ETXOUT
+	LD	(F_SCK),A
+	CALL	SSOPEN		;open Server-Socket
+;---- allocate memory for current free data sockets ----
+DSAMEM:	LD	B,MAXSCK-1
+	LD	C,0		;# free sockets
+TFTMS1:	PUSH	BC
+	LD	A,0FFH		;any
+	LD	D,SK_DGRAM	;Mode
+	LD	E,0		;Flags
+	CALL	SOCKET		;get DATA-Socket
+	POP	BC
+	JR	C,TFTMS4	;got all free Sockets 
+	PUSH	AF
+	LD	DE,FSCKLG	;data structure length
+	CALL	ALLOC##		;memory-ADR in HL
+	POP	DE		;from AF
+	JR	NZ,TFTMS2	;OK
+	LD	A,D
+	CALL	CLOSE		;no memory -> release Socket!
+	JR	TFTMS4
+TFTMS2:	XOR	A
+	OR	C
+	JR	NZ,TFTMS3
+	LD	(ADDSCK),HL	;first Structure
+	LD	(AADSCK),HL	;= current Structure
+TFTMS3:	INC	C
+	LD	(HL),D		;DataSocket-Nr.
+	DJNZ	TFTMS1		;next DataSocket
+TFTMS4:	XOR	A
+	OR	C
+	LD	DE,F_CMXC
+	CALL	Z,ZKOUT
+	JP	Z,TFTPLE	;no DataSockets free
+	LD	(ANZSCK),A	;# of free DataSockets
+	LD	(ACTSCK),A	;down counter
+	LD	B,A
+	LD	HL,(ADDSCK)
+	LD	DE,FSCKLG
+TFTMS5:	LD	A,(HL)		;get Socket-Nr.
+	LD	(HL),0FFH	;set Structure to "unused"
+	CALL	CLOSE		;release Socket
+	ADD	HL,DE		;next address
+	DJNZ	TFTMS5
+;------ allocate remaining memory for DIR Buffer -------
+	LD	DE,1		;dummy length
+	CALL	ALLOC##
+	LD	(FMDIRB),HL	;ADR DIR Buffer
+;------ jump to Server or Client loop in ---------------
+	BIT	4,(IX)
+	JR	NZ,TFNWS0
+	;client commandline
+	BIT	3,(IX)
+	LD	A,'P'
+	JP	NZ,TFTPLI	;start client PUT
+	LD	A,'G'
+	JP	TFTPLI		;start client GET
+TFNWS0:	;write local IP
+	LD	DE,LOCNET
+	LD	HL,F_MLIP+27
+	CALL	WRMLIP
+TFNWST:	;refresh Server-MENU
+	;TIMEOUT
+	LD	HL,(F_TMO)
+	LD	DE,1000
+	CALL	DIVHD##
+	LD	A,L
+	LD	DE,F_MTMO+29
+	CALL	MADC##		;MEM write
+	;SYS-Files ON/OFF
+	LD	HL,F_S_ON
+	LD	DE,F_MSYF+30
+	LD	BC,3
+	LD	A,(F_SYSF)
+	BIT	6,A
+	JR	NZ,TFNWS1	;=1: ON
+	ADD	HL,BC
+TFNWS1:	LDIR			;copy SYS-State
+	;CLIENT-DIR
+	LD	DE,(FUCLNT)
+	LD	HL,F_MSRT+9
+	CALL	WRCDIR
+	;SERVER-DIR
+	LD	DE,(FUROOT)
+	LD	HL,F_MSRT+44
+	CALL	WRCDIR
+	;SERVER ON/OFF
+	LD	HL,F_S_ON
+	LD	DE,F_MSSS+44
+	LD	BC,3
+	BIT	7,(IX)
+	JR	Z,TFNWS2	;=0: ON
+	ADD	HL,BC
+TFNWS2:	LDIR			;copy Server-State
+	;SERVER PORT
+	LD	HL,(FSPORT)
+	LD	DE,F_MSPT+50
+	CALL	MHLFDC##	;MEM write
+	EX	DE,HL
+	LD	A,CR
+TFNWS3:	CP	(HL)
+	JR	Z,TFNWS4
+	LD	(HL),' '	;always 5 digits
+	INC	HL
+	JR	TFNWS3
+TFNWS4:	;Server-MENU Output
+	LD	DE,F_MEN1	;first part
+	CALL	ZKOUT
+	;CLIENT HOST[:PORT]
+	LD	DE,(TDMNBF)
+	LD	A,(DE)
+	OR	A
+	JR	Z,TFNWS5	;empty
+	CALL	ZKOUT
+	LD	DE,(FCPORT)
+	LD	HL,69		;standard port?
+	SBC	HL,DE
+	JR	Z,TFNWS5	;->skip
+	EX	DE,HL
+	LD	A,':'
+	CALL	COUT##
+	CALL	PHLFDC##
+TFNWS5:	LD	DE,F_MEN2	;second part
+	CALL	ZKOUT
+	LD	DE,(RMFNBF)	;FOLDER
+	CALL	ZKOUT
+	LD	DE,F_MEN3	;third part
+	CALL	ZKOUT
+	;reset current Data-Socket
+	LD	HL,(ADDSCK)
+	LD	(AADSCK),HL	;address
+	LD	A,(ANZSCK)
+	LD	(ACTSCK),A	;Down-Counter
+	XOR	A
+	LD	(DSMCNT),A	;line Counter
+;###### TFTP MAIN LOOP #################################
+TFTPLP:	BIT	5,(IX)
+	RES	5,(IX)
+	JP	NZ,TFNWST	;update Server Menu ON
+	CALL	CST##		;CON ?
+	JR	NZ,TFTCTR	;no Input
+;------ KEYBOARD INPUT HANDLING ------------------------
+	CALL	CONDIN##	;get CHR (+NL)
+	CP	ETX
+	JP	Z,TFTDRE	;break
+	CP	ESC
+	JP	Z,TFTDRE	;break
+	BIT	4,(IX)
+	JR	Z,TFTCTR	;client commandline
+TFTPLI:	AND	0DFH		;UCASE
+	CP	'T'
+	CALL	Z,TFTSEL	;sel. TIMEOUT
+	CP	'Y'
+	CALL	Z,TFYSEL	;sel. SYS-Files
+	CP	'H'
+	CALL	Z,TFHSEL	;sel. RM-HOST
+	CP	'F'
+	CALL	Z,TFFSEL	;sel. RM-FOLDER
+	CP	'C'
+	CALL	Z,TFCFIL	;sel. Client-DIR
+	CP	'D'
+	CALL	Z,TFCLST	;DIR Client
+	CP	'S'
+	CALL	Z,TFRSEL	;sel. Server-DIR
+	CP	'L'
+	CALL	Z,TFRDIR	;DIR Server
+	CP	'N'
+	CALL	Z,TFSWCH	;on/off SERVER
+	CP	'O'
+	CALL	Z,TFSPRT	;sel. SERVER-PORT
+	CP	'P'
+	JR	NZ,TFTPGF
+	LD	A,(SPCKEY)
+	CP	'R'
+	JR	Z,TFTCTR	;first serve 'R'!
+	CALL	TFCPUT		;PUT File (Client)
+	JR	TFTPGC
+TFTPGF:	CP	'G'
+	JR	NZ,TFTCTR
+	CALL	TFCGET		;GET File (Client)
+TFTPGC:	LD	A,BEEP
+	CALL	C,COUT##	;ERR without MSG
+	JR	TFTCNI		;skip 'spec' and Server
+;------ load PTR and 'spec' TRANSFER HANDLING ----------
+TFTCTR:	LD	IY,(AADSCK)	;current Socket-PTR
+	LD	A,(SPCKEY)
+	CP	'R'
+	JR	NZ,TFTPNI
+	LD	A,(IY)
+	INC	A
+	JR	Z,TFTPNI	;unused
+	BIT	6,(IY+F_STAT)
+	JR	Z,TFTPNI	;current <> 'spec' Socket
+	;next 'spec' REQUEST
+	RES	0,(IX)		;set r/w Bit like PUT!
+	LD	A,(IY)
+	CALL	SHUTDN		;to connect with new Port!
+	CALL	DSINIT		;clear structure
+	CALL	TFCPIN		;next
+	RES	5,(IX)		;update Server Menu off
+	JR	TFTCNI		;skip server check
+;------ SERVER SOCKET HANDLING -------------------------
+TFTPNI:	BIT	4,(IX)
+	JR	Z,TFTCNI	;client commandline
+	;check Receiver
+	LD	A,(F_SCK)
+	LD	E,SL_RECV
+	CALL	SELECT		;check receiver
+	CALL	NC,TFSERV	;parse SERVER-Data
+;------ DATA SOCKET HANDLING ---------------------------
+TFTCNI:	;check Receiver
+	LD	IY,(AADSCK)	;current Socket-PTR
+	LD	A,(IY)
+	INC	A
+	JP	Z,TFTNOU	;unused Socket
+	;Transfer-Info to CON:
+	CALL	TSINFO		;for online Sockets only
+	LD	A,(IY)
+	LD	E,SL_RECV
+	CALL	SELECT		;check receiver
+	CALL	NC,TFDATA	;parse Data
+	LD	A,(IY+F_STAT)
+	AND	80H+20H
+	JR	NZ,TFTEIO	;to Error-Info
+	;check Timeout
+	LD	E,(IY+F_TIME)
+	LD	D,(IY+F_TIME+1)
+	CALL	CALCTD		;HL=Time-Diff.
+	LD	DE,(F_TMO)	;TIMEOUT
+	OR	A
+	SBC	HL,DE
+	JR	C,TFTCSR	;Diff.< TIMEOUT
+TFTDCE:	;break transfer
+	LD	HL,XE_TRTM
+	LD	(IY+F_EMSG),L
+	LD	(IY+F_EMSG+1),H	;load ERR Message
+	CALL	DRWSET		;set r/w Bit DATA-Socket
+	CALL	TFSERR		;-> ERR close with ERR-Packet
+	JR	TFTEIO		;   and ERR-MSG to CON:
+TFTCSR:	;check Send Repeat
+	LD	E,(IY+F_TRPT)
+	LD	D,(IY+F_TRPT+1)
+	CALL	CALCTD		;HL=Time-Diff.
+	LD	DE,(F_WRPT)	;PACKET-REPEAT
+	OR	A
+	SBC	HL,DE
+	CALL	NC,TFREPT	;Diff.> REPEAT Time
+TFTEIO:	;check for Transfer-End (OK and ERR)
+	LD	A,(IY+F_STAT)
+	AND	80H+20H+10H
+	JR	Z,TFTCNL	;nothing to do -> continue
+	BIT	7,A
+	JR	Z,TFTEDT
+	;Client-Init Error
+	CALL	EMCOUT		;ERR-MSG to CON:
+	JR	TFTEDI		;finish transfer 
+TFTEDT:	BIT	5,A
+	JR	Z,TFTDOK
+	;DATA-Transfer Error
+	CALL	EMDOUT		;ERR-MSG to CON:
+TFTEDI:	BIT	6,(IY+F_STAT)
+	CALL	NZ,RSSPEC	;reset 'spec'-PTR
+	BIT	4,(IX)
+	CALL	Z,NEWLN		;client commandline -> next line
+	JR	TFTMAK		;finish transfer
+TFTDOK:	;DATA-Transfer finished OK
+	LD	A,CLLN
+	CALL	COUT##
+	CALL	FINOUT
+	LD	DE,F_CIXL	;'OK'
+	CALL	ZKOUT
+	BIT	4,(IX)
+	CALL	Z,NEWLN		;client commandline -> next line
+	BIT	6,(IY+F_STAT)	;'spec' Socket ?
+	JR	Z,TFTMAK	;no
+	;last 'spec' ready -> start next or quit
+	CALL	NXSPEC		;find and load next entry
+	JR	C,TFTMAK	;ready
+	LD	A,'R'
+	LD	(SPCKEY),A	;start next 'spec'
+	JR	TFTCNL		;cont. without release!
+TFTMAK:	;finish Transfer
+	BIT	4,(IX)
+	JR	NZ,TFTMSV
+	LD	A,LNUP		;commandline
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	TFTRLS
+TFTMSV:	SET	5,(IX)		;update Server Menu
+TFTRLS:	LD	A,(IY)
+	CALL	CLOSE		;release Socket
+	LD	(IY),0FFH	;release structure
+TFTCNL:	;next line and Counter+1
+	CALL	NEWLN
+	LD	HL,DSMCNT
+	INC	(HL)
+TFTNOU:	BIT	4,(IX)
+	JR	Z,TFTRSS	;client commandline
+	;switch to next DataSocket
+	LD	HL,(AADSCK)
+	LD	DE,FSCKLG
+	ADD	HL,DE
+	LD	(AADSCK),HL	;next
+	LD	A,(ACTSCK)
+	DEC	A		;DCounter-
+	LD	(ACTSCK),A
+	JR	NZ,TFTSTS	;>0
+	;reset PTR
+	LD	HL,(ADDSCK)
+	LD	(AADSCK),HL	;first address
+	LD	A,(ANZSCK)
+	LD	(ACTSCK),A	;Down-Counter
+TFTRSS:	;Cursor Up*Counter
+	LD	HL,DSMCNT
+	XOR	A
+	OR	(HL)
+	LD	(HL),0		;reset line Counter
+	JR	Z,TFTSTS	;nothing passed out
+	LD	B,A
+	LD	A,LNUP
+;TFTRCL:	CALL	COUT##
+TFTRCL:	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	DJNZ	TFTRCL
+TFTSTS:	;set Transfer State
+	LD	A,(ANZSCK)
+	LD	B,A
+	RES	6,(IX)		;set Transfers OFF ?
+	LD	HL,(ADDSCK)	;first
+	LD	DE,FSCKLG
+TFTTTS:	LD	C,(HL)
+	INC	C
+	JR	Z,TFTNTR	;unused
+	SET	6,(IX)		;set Transfers ON
+TFTNTR:	ADD	HL,DE		;next
+	DJNZ	TFTTTS
+	BIT	4,(IX)
+	JP	NZ,TFTPLP	;loop if Server-Menu
+	JR	TFTDSE
+;###### TFTP MAIN LOOP END #############################
+TFTDRE:	;break requested
+	BIT	4,(IX)
+	JR	NZ,TFTDSE	;Server-Menu
+	CALL	CHTRNS		;Transfers in progress ?
+	JP	C,TFTDCE	;ON->break transfer
+TFTDSE:	CALL	CHTRNS		;Transfers in progress ?
+	JP	C,TFTPLP	;ON->loop
+TFTPLE:	LD	A,(F_SCK)
+	BIT	4,(IX)
+	CALL	NZ,CLOSE	;release Server-Socket
+	CALL	_GETUD		;Restore Disk/User
+	;
+T_ENDE:	;TFTP Quit
+	CALL	NEWLN		;always NEWLN
+TFQUIT:	LD	C,WBOOT		;go to CP/M
+	CALL	BDOS		;don't JUMP (gives an
+				;Error with Z-System)
+;****** local Stack ************************************
+	DS	128,0		;depth = 64
+STACK	EQU	$
+;*******************************************************
+EEMAIN	EQU	$		;last ADR main program
+;****** Code-End ***************************************
+
+IF2        
+	.PRINTX "TFTPxx.COM"
+	.RADIX  16
+        PRMSG   <KCN-INC LENGTH:>,%(AAMAIN-103H)
+        PRMSG   <    MAIN BEGIN:>,%AAMAIN
+        PRMSG   <   MAIN LENGTH:>,%(EEMAIN-AAMAIN)
+        PRMSG   <  LAST ADDRESS:>,%EEMAIN
+        PRMSG   <PROGRAM LENGTH:>,%(EEMAIN-100H)
+	.RADIX  10
+ENDIF
+	.DEPHASE
+	END

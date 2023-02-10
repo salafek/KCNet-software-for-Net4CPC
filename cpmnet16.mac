@@ -1,0 +1,4268 @@
+;*******************************************************
+;
+;	     KCNet Interfacetest CP/M 2+
+;
+;		###     KCNet     ###
+;		 WIZnet TCP/IP-Stack 
+;		###  susowa 2008  ###
+;
+;  Name		: CPMNETxx.MAC
+;  Date		: 12.12.2007
+;  Modified	: 25.02.2012
+;		: 21.11.2022 d_kef
+;  Hardware	: Net4CPC - W5100S
+;
+;  extern       : SYSLIB.REL
+;
+;  Includes:
+;     KCNET.INC - Configuration
+;   N4C-W51.INC - Interface driver Net4CPC W5100S
+;  W5100-xx.INC - TCP/IP and Socket driver
+;   DNSC-xx.INC - DNS client
+;
+;*******************************************************
+
+;*** CPMNET-VERSION ************************************
+V_MAJOR	EQU	1
+V_MINOR	EQU	6
+;*** MACROS ********************************************
+NO	EQU	0
+YES	EQU	NOT NO
+	;
+PRMSG   MACRO   MSG,N       
+	.PRINTX *MSG,N*
+	ENDM
+	;
+INLINE  MACRO
+	CALL	INLINE## 	;Input
+	ENDM
+;*** common Equations **********************************
+	;destination
+        .PHASE  00100H
+	;CPU
+	.Z80
+	;CP/M 2+ constants
+BDOS	EQU	5
+DMA     EQU	80H
+	;BDOS
+CPMVER	EQU	12		;get CP/M-Version
+;*******************************************************
+
+;*** Start of Code *************************************
+	;start address
+	JP	BEGIN
+	;ZCPR
+	DB	'Z3ENV'
+	DB	1		;type 1
+Z3EPTR:	DW	0		;pointer
+	;"KCNet" files
+	INCLUDE	KCNET.INC	;config file
+;
+	CKMAC	EQU	YES
+	INCLUDE	N4C-W51.INC	;Net4CPC - W5100S routines
+;
+	INCLUDE	W5100-12.INC	;TCP/IP+Socket-Driver
+;
+	INCLUDE	DNSC-11.INC	;DNS-Client
+;
+	;first address main
+AAMAIN	EQU	$
+;*******************************************************
+
+;*** Work RAM ******************************************
+BSSTAM:	DB	0		;screen state (KC85)
+N_TEMP:	DB	0,0		;Temp for ARG-PTR
+	;HOrder
+KCNPTR:	DW	N_TXBF		;PIO-PTR
+SOCKNM:	DB	0		;Testsocket Number/Handle
+SECHO:	DB	0		;Echo-Mode ON/OFF
+CTECHO:	DB	0		;Counter ECHO-Out
+HCNRTR:	DW	0		;RTR in HOrder
+	;NOrder
+KCNRTR:	DB	07H,0D0H	;Timeout (*100us)
+KCNRCR:	DB	8		;Retry
+SRCIP:	DB	0,0,0,0		;IP local
+SSPORT:	DB	13H,88H		;PORT local
+PEERIP:	DB	192,168,0,20	;IP Peer
+PEERPT:	DB	13H,88H		;PORT Peer
+SRCMSK:	DB	0,0,0,0		;MASK
+SRCGTW:	DB	0,0,0,0		;GATEWAY
+SRCMAC:	DB	0,0,0,0,0,0	;MAC
+LOCDNS:	DB	0,0,0,0		;local DNS
+	;ADR-Table for ARGV##-addresses (SYSLIB)
+ARGMAX:	DB	10		;max. 10 Arguments
+ARGN:	DB	0		;Number of Arguments found
+PARG1:	DW	0		;ADR ARG1
+PARG2:	DW	0		;ADR ARG2
+PARG3:	DW	0		;ADR ARG3
+PARG4:	DW	0		;ADR ARG4
+PARG5:	DW	0		;ADR ARG5
+PARG6:	DW	0		;ADR ARG6
+PARG7:	DW	0		;ADR ARG7
+PARG8:	DW	0		;ADR ARG8
+PARG9:	DW	0		;ADR ARG9
+PARG10:	DW	0		;ADR ARG10
+	;ARG Values
+ARG1:	DW	0		;Argument 1
+ARG2:	DW	0		;Argument 2
+ARG3:	DW	0		;Argument 3
+ARG4:	DW	0		;Argument 4
+ARG5:	DW	0		;Argument 5
+ARG6:	DW	0		;Argument 6
+ARG7:	DW	0		;Argument 7
+ARG8:	DW	0		;Argument 8
+ARG9:	DW	0		;Argument 9
+ARG10:	DW	0		;Argument 10
+	;Buffer for I_NTOA/I_ADDR
+I_ATMP:	DS	4,0		;temp. I_ADDR
+I_NTMP:	DS	16,0		;temp. I_NTOA
+;
+SYSVER:	DB	0		;CP/M-Version
+;
+	;Error messages
+CPMERR:	DB	'CP/M-Version 2+ required !',BEEP,'$'
+ARGOVF:	DB	'Too many arguments (help with -h)!',BEEP,'$'
+	;CPMNET-Usage
+NETHLP:	DB	'cpmnet [-h|v|i|t|n]',CR,LF
+	DB	LF
+	DB	'-h|v   - show help or version and exit',CR,LF
+	DB	LF
+	DB	'-i     - show interface menu',CR,LF
+	DB	'-t     - show TCP/IP menu',CR,LF
+	DB	'-n     - show network menu'
+	DB	'$'
+	;
+	;CPMNET-Version
+NETHT1:	DB	'###   KCNet-Interfacetest CP/M 2+   ###',CR,LF
+	DB	'             Version ',V_MAJOR+'0','.',V_MINOR+'0',CR,LF
+	DB	'         "KCNet TCP/IP-Stack"',CR,LF
+	DB	'### copyright 2008-2011 by >susowa< ###',CR,LF
+	DB	LF,'$'
+NETHT2:	DB	CR,LF
+	DB	'          Show Help with -h','$'
+	;
+;### common SUB-programs ###############################
+	;clear RAM
+CLRMEM:	LD	(HL),0
+	LD	D,H
+	LD	E,L
+	INC	DE
+	DEC	BC
+	LDIR
+	RET
+	;CR+LF Out
+NEWLN:	PUSH	AF
+	LD	A,CR
+	CALL	COUT##
+	LD	A,LF
+	CALL	COUT##
+	POP	AF
+	RET
+	;(DE)-string + 0/'$' Out
+ZKOUT:	PUSH	AF
+ZKOU1:	LD	A,(DE)
+	INC	DE
+	AND	A
+	JR	Z,ZKOU2
+	CP	'$'
+	JR	Z,ZKOU2
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	ZKOU1
+ZKOU2:	POP	AF
+	RET
+	;(HL) IP-Address to CON Out
+IPOUT:	PUSH	AF
+	PUSH	DE
+	LD	DE,I_NTMP
+	CALL	I_NTOA		;convert
+	CALL	ZKOUT		;Out
+	LD	DE,4
+	ADD	HL,DE
+	POP	DE
+	POP	AF
+	RET
+	;(HL) IP:Port Out
+IPPOUT:	PUSH	AF
+	PUSH	HL
+	CALL	IPOUT		;IP Out
+	LD	A,':'
+	CALL	COUT##
+	LD	A,(HL)
+	INC	HL
+	LD	L,(HL)		;NOrder!
+	LD	H,A
+	CALL	PHLFDC##	;Port Out
+	CALL	NEWLN
+	POP	HL
+	POP	AF
+	RET
+	;(HL) MAC-Address to CON Out
+MACOUT:	PUSH	AF	
+	LD	B,6		; 6*HEX
+	JR	MCOUTI
+MCOUTC:	LD	A,':'
+	CALL	COUT##
+MCOUTI:	LD	A,(HL)
+	CALL	PA2HC##		;A-HEX CON Out
+	INC	HL
+	DJNZ	MCOUTC
+	POP	AF
+	RET
+	;1 HEX-Row Out
+	;PI:	HL-displayed Address
+	;	DE-address of byte in memory
+	;	 C-counter bytes per line
+DPMEMO:	CALL	PHL4HC##	;HL-HEX Out
+	LD	A,' '
+	CALL	COUT##
+	PUSH	DE
+	LD	B,C
+DPME1:	LD	A,(DE)		;get byte
+	INC	DE
+	CALL	PA2HC##		;A-HEX Out
+	LD	A,' '
+	CALL	COUT##
+	DJNZ	DPME1		;C*
+	POP	DE
+	LD	B,C
+	LD	A,' '
+	CALL	COUT##
+DPME2:	LD	A,(DE)		;get byte
+	INC	DE
+	CP	020H
+	JR	C,DPME3		;->CTRL
+	CP	080H
+	JR	C,DPME4		;->ASCII
+DPME3:	LD	A,'.'		;<20H & >7FH
+DPME4:	CALL	COUT##		;to CON
+	DJNZ	DPME2		;C*
+	RET
+	;(HL) NetTime Out (in s, 32 Bit, NOrder)
+N32OUT:	EX	DE,HL
+	LD	HL,HTIME
+	CALL	NTOHL
+	LD	HL,(HTIME+2)	
+	LD	BC,(HTIME)	
+	LD	DE,3600
+	CALL	DIV32		;HL-h
+	LD	DE,24
+	CALL	SDIV##		;DE-days/HL-hours
+	EX	DE,HL
+	PUSH	DE
+	LD	DE,DAYTX
+	CALL	ZSTRGO
+	POP	HL
+	LD	DE,STDTX
+	CALL	ZSTRGO
+	RET
+DAYTX:	DB	' DAY(S) ','$'
+STDTX:	DB	' HOUR(S) ','$'
+ZSTRGO:	LD	A,H
+	OR	L
+	RET	Z
+	CALL	PHLFDC##	;Value
+	CALL	ZKOUT		;Unit
+	RET
+	;HLBC:DE=HL
+DIV32:  XOR     A
+	EX	AF,AF'
+	LD	A,17
+DIV11:  EX      AF,AF'
+	OR	A
+	SBC	HL,DE
+        SBC     A,0
+	JR	NC,DIV12
+	ADD	HL,DE
+        ADC     A,0
+DIV12:  CCF
+	RL	C
+	RL	B
+	RL	L
+	RL	H
+	RLA
+	EX	AF,AF'
+	DEC	A
+	JR	NZ,DIV11
+	LD	H,B
+	LD	L,C
+	RET
+	;NET-Data MEM->CON Out
+NDTOUT:	LD	HL,LINEBF
+NDTOU1:	LD	A,(HL)
+	CP	LF
+	JR	Z,NDTOU3
+	CP	CR
+	JR	Z,NDTOU3
+	CP	020H
+	JR	C,NDTOU2	;CTRL
+	CP	080H
+	JR	C,NDTOU3	;ASCII
+NDTOU2:	LD	A,'.'		;<20H & >7FH
+NDTOU3:	CALL	COUT##		;to CON
+	INC	HL
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,NDTOU1
+	RET
+	;show Version
+NETVER:	PUSH	AF
+	LD	DE,NETHT1
+	CALL	ZKOUT
+	LD	DE,N_DLBL	;IF-driver label
+	CALL	ZKOUT
+	LD	DE,NETHT2
+	CALL	ZKOUT
+	POP	AF
+	RET
+	;ARG's in and parse
+INPUT:	LD	A,1		;Echo ON
+	LD	HL,LINEBF	;BUFFER
+	INLINE			;Input Macro
+	LD	DE,ARGMAX	;ARG-Table
+	LD	A,B		;terminate parameter with 0 
+	LD	(DE),A		;load MAX
+	CALL	ARGV##		;parse
+	SCF
+	RET	NZ		;too many parameter
+	CCF
+	RET
+	;Input CON
+INCON:	LD	A,1		;Echo ON
+	LD	HL,LINEBF	;BUFFER
+	INLINE			;Input Macro
+	LD	DE,0		;length Text
+	XOR	A
+INCON1:	CP	(HL)		;address of 0-delimiter
+	RET	Z
+	INC	DE
+	INC	HL
+	JR	INCON1
+	;Input SEND-TEXT from CON
+INTEXT:	LD	DE,TCPMX3
+	CALL	ZKOUT
+	CALL	INCON
+	LD	(HL),CR
+	INC	DE
+	INC	HL
+	LD	(HL),LF
+	INC	DE
+	LD	B,D
+	LD	C,E		;Text Size + CRLF
+	LD	HL,LINEBF	;BUFFER Input
+	RET
+	;Input PEER from CON to DNB
+INPEER:	CALL	INCON
+	LD	B,D
+	LD	C,E		;Input length
+	INC	BC		;include 0-delimiter
+	LD	HL,LINEBF	;BUFFER Input
+	LD	A,D
+	OR	E
+	SCF			;CY=1: ERR
+	RET	Z		; Z=1: no Input
+	INC	D
+	DEC	D
+	RET	NZ		;>255
+	OR	A		;CY+Z=0 !
+	LD	DE,DMNBUF
+	PUSH	HL
+	PUSH	DE
+	PUSH	BC
+	LDIR			;Input+0 -> DN-Buffer
+	POP	BC		;length+0
+	POP	DE		;DE=DMNBUF (Domain-Name-Buffer)
+	POP	HL		;HL=LINEBF (MSG-Buffer)
+	RET
+	;Get resolved PEER:PORT to PEERIP/PEERPT
+GTPEER:	CALL	INPEER
+	RET	C		;no/ERR Input
+	PUSH	HL
+	PUSH	DE
+GTPEE1:	LD	A,(DE)
+	CP	':'		;find PORT
+	JR	Z,GTPEE2
+	OR	A
+	JR	Z,GTPEE3	;not found
+	INC	DE
+	JR	GTPEE1
+GTPEE2:	EX	DE,HL
+	LD	(HL),0		;clear!
+	INC	HL
+	CALL	ATOI		;(HL)STRING->DE=PORT#
+	JR	C,GTPEE3	;PORT Input-ERR
+	LD	(ARG1),DE
+	LD	HL,ARG1
+	LD	DE,PEERPT
+	CALL	HTONS		;conv.+copy
+GTPEE3:	POP	DE
+	POP	HL
+	LD	A,(DE)
+	OR	A
+	RET	Z		;no PEER from input
+	CP	'0'
+	JR	C,GTPEE4	;<0 no Digit
+	CP	'9'+1
+	JR	NC,GTPEE4	;>9 no Digit
+	;try to convert num. IP from digit(s)
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	JR	NC,GTPEE6	;OK->copy IP
+GTPEE4:	;Name
+	CALL	GHBNAM		;query:(DE)Name->(DE)IP
+	EX	DE,HL
+	JR	NC,GTPEE6
+	;ERR resolve
+	LD	DE,DNSQSE	;Server-
+	CP	16
+	JR	C,GTPEE5
+	LD	DE,DNSQCE	;Client-
+GTPEE5:	CALL	ZKOUT		;ERR Out
+	CALL	PAFDC##		;ERR#
+	CALL	NEWLN
+	SCF			;ERR
+	RET
+GTPEE6:	LD	DE,PEERIP
+	LD	BC,4
+	LDIR
+	OR	A		;OK
+	RET
+	;ECHO-Mode on/off
+SWECHO:	PUSH	AF
+	LD	A,(SECHO)
+	XOR	1
+	LD	(SECHO),A
+	CALL	Z,NEWLN		;on->off NEWLN
+	LD	DE,TCPMXV
+	CALL	ZKOUT
+	LD	DE,TCPMXW
+	JR	NZ,SWECH1
+	LD	DE,TCPMXX
+SWECH1:	CALL	ZKOUT
+	XOR	A		;del. Key
+	LD	(CTECHO),A	;reset Counter
+	POP	AF
+	RET
+	;Message and ...
+TXTOUT:	CALL	ZKOUT
+	; ... wait
+MLDWT:	CALL	CONDIN##
+	JR	Z,MLDWT		;Key?
+	RET
+	;check past CHAR
+PAEVAL:	LD	A,(HL)
+	OR	A
+	RET	Z		;0 OK
+	CP	' '
+	RET	Z		;SPC OK
+	CP	'0'
+	RET	C		;<0 no Digit ERR
+	CP	'9'+1
+	CCF			;>9 no Digit ERR
+	RET
+	;make 4 Random-Bytes to (HL)
+MZ4ID:	LD	A,R
+	LD	(HL),A
+	INC	HL
+	ADC	A,080H
+MZ4IDW:	DEC	A
+	JR	NZ,MZ4IDW
+	LD	A,R
+	LD	(HL),A
+	INC	HL
+	ADD	A,080H
+	LD	(HL),A
+	INC	HL
+	LD	A,R
+	LD	(HL),A
+	RET
+	;compare (DE)-(HL) 2/4/6 Byte
+CMP2BT:	LD	BC,2
+	JR	CMPBTL
+CMP4BT:	LD	BC,4	
+	JR	CMPBTL
+CMP6BT:	LD	BC,6
+CMPBTL:	LD	A,(DE)
+	INC	DE
+	CPI
+	RET	NZ
+	JP	PE,CMPBTL
+	RET			;Z=1 same
+	;compare A-(HL) 2/4/6 Byte
+CPA2BT:	LD	BC,2
+	JR	CPABTL
+CPA4BT:	LD	BC,4	
+	JR	CPABTL
+CPA6BT:	LD	BC,6
+CPABTL:	CPI
+	RET	NZ
+	JP	PE,CPABTL
+	RET			;Z=1 same
+	;calculate Time-Diff. in ms
+	;PI: DE - old Timer
+CALCPT:	CALL	N_TIME		;get Timer NOW
+CALCPU:	OR	A
+	SBC	HL,DE		;NOW-(DE-Time)
+	RET	NC		;OK
+	LD	DE,N_XTIME
+	ADC	HL,DE		;correct Overflow
+	RET
+	;write current Network-Settings
+SETNET:	LD	HL,SRCIP
+	CALL	N_SLIP		;IP
+	LD	HL,SRCMSK
+	CALL	N_SLMA		;MASK
+	LD	HL,SRCGTW
+	CALL	N_SGTW		;GATEWAY
+	RET
+	;read current Network-Settings and
+	;test it: Z=1 not configured
+GTTNET:	;read all
+	LD	HL,SRCIP
+	CALL	N_GLIP		;IP
+	LD	HL,SRCMSK
+	CALL	N_GLMA		;MASK
+	LD	HL,SRCGTW
+	CALL	N_GGTW		;GATEWAY
+	LD	HL,SRCMAC
+	CALL	N_GLMC		;get MAC 
+	;test only IP & MASK
+	XOR	A
+	LD	HL,SRCIP
+	CALL	CPA4BT
+	RET	Z		;KCNET-IP=4*000
+	LD	HL,SRCMSK
+	CALL	CPA4BT
+	RET			;KCNET-MASK=4*000
+	;Online-Test with ERR-Message to CON
+	;PO:	CY=1 offline
+ONTEST:	CALL	N_LSTA		;LINK STATE
+	XOR	A
+	OR	E		;OK?
+	LD	DE,NONTXT
+	CALL	Z,ZKOUT
+	SCF
+	RET	Z		;offline
+	CCF
+	RET
+NONTXT:	DB	'network-cable not connected !',BEEP,CR,LF,'$'
+	;Network-Test with ERR-Message to CON
+	;PO:	CY=1 not configured
+NETTST:	CALL	GTTNET
+	LD	DE,NKNTXT
+	CALL	Z,ZKOUT
+	SCF
+	RET	Z		;not conf.
+	CCF
+	RET
+NKNTXT:	DB	'network not configured !',BEEP,CR,LF,'$'
+	;input, test and send 4-Byte parameter
+PARSND:	LD	(ARG5),HL	;ADR Errortext
+	LD	(ARG6),BC	;NAddress KCNET
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,PARSNE	;Error
+	LD	A,(ARGN)
+	OR	A		;CY=0
+	RET	Z		;Z=1: no Input
+	LD	HL,ARG1		;1. NUM
+	LD	DE,(PARG1)	;1. CHR
+	CALL	I_ADDR		;STRING->IP
+	JR	C,PARSNE	;Error
+	;write ARG(HL)-List to DE
+	LD	BC,4		;4 Bytes
+	PUSH	BC
+	LD	DE,(ARG6)	;NAddress KCNET
+	CALL	N_WRBF		;write 4 bytes
+	EX	DE,HL
+	POP	BC
+	ADD	HL,BC
+	LD	(KCNPTR),HL	;sync. local Pointer
+	XOR	A		;CY=0
+	INC	A		;Z=0
+	RET
+PARSNE:	LD	DE,(ARG5)	;PTR ERR-Text
+	CALL	TXTOUT		;Out and wait for Key
+	SCF			;CY=1: ERR
+	RET
+	;Peer Data Out
+PDIPXT:	DB	'  IP: ','$'
+PDNMXT:	DB	CR,LF,'Name: ','$'	
+PDTOUT:	LD	DE,PDIPXT
+	CALL	ZKOUT	
+	PUSH	HL
+	CALL	IPOUT		;Peer-IP Out
+	POP	HL
+	LD	DE,DMNBUF
+	PUSH	DE
+	LD	BC,4
+	LDIR
+	POP	DE
+	LD	HL,LINEBF
+	CALL	GHBADR		;iquery:(DE)IP->(DE)Name
+	RET	C		;no name
+	PUSH	DE
+	LD	DE,PDNMXT
+	CALL	ZKOUT
+	POP	DE
+	CALL	ZKOUT		;Peer Name Out
+	RET
+	
+;#######################################################
+;### Interface-Functions ###############################
+;#######################################################
+	; Command 'POINTER'	
+SPTX:	DB	'POINTER ','$'
+CSZEIG:	LD	DE,SPTX
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	C,JPSPE		;Error	
+	LD	HL,(PARG1)
+	CALL	EVAL##		;convert String
+	JR	C,JPSPE		;Error
+	LD	(ARG1),DE
+	LD	A,(ARGN)	;number of arguments
+	LD	HL,(ARG1)	;ADR
+	CP	1		
+	JR	NZ,JPSPE	;Error
+	CALL	N_PTR		;Command
+	LD	(KCNPTR),HL	;synchronize Pointer local
+	;Echo
+	CALL	PHL4HC##	;HL-HEX Out
+	JP	MLDWT
+JPSPE:	LD	DE,CSPETX
+	JP	TXTOUT		;ERROR
+CSPETX:	DB	'POINTER: ADR (16Bit)',BEEP,'$'
+;---------------------------------------
+	; Command 'WRBYTES'	
+WBSTX:	DB	'WRBYTES ','$'
+CSBYTES:LD	DE,WBSTX
+	CALL	ZKOUT
+	LD	B,10		;max. 10 Parameter
+	CALL	INPUT
+	JR	C,JPWBSE	;Error	
+	LD	A,(ARGN)	;number of arguments
+	OR	A		
+	JR	Z,JPWBSE	;Error
+	LD	B,A		;Counter
+	LD	HL,PARG1	;ADR ARG-String
+	LD	DE,ARG1		;storage
+SBYTSW:	PUSH	DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	INC	HL
+	PUSH	HL
+	EX	DE,HL
+	CALL	EVAL##		;convert String
+	LD	C,D
+	POP	HL
+	POP	DE
+	JR	C,SBYTSE	;String-Error
+	INC	C
+	DEC	C		;MSBYTE=0?
+	JR	NZ,SBYTSE	;>8Bit
+	LD	(DE),A		;A=LSBYTE
+	INC	DE		;next
+	DJNZ	SBYTSW
+SBYTSE:	LD	A,(ARGN)	;number of arguments
+	SUB	B
+	JR	Z,JPWBSE	;0 found
+	LD	C,A
+	LD	B,0		;=Counter
+	LD	DE,(KCNPTR)	;=Destination
+	LD	HL,ARG1		;storage
+	PUSH	BC
+	CALL	N_WRBF		;write
+	POP	BC
+	EX	DE,HL
+	;Echo
+	CALL	PHL4HC##	;HL-HEX Out
+	ADD	HL,BC
+	LD	(KCNPTR),HL	;synchronize
+	LD	A,'='
+	CALL	COUT##
+	LD	HL,ARG1		;storage
+	LD	B,C
+SBSEW:	LD	A,(HL)
+	INC	HL
+	CALL	PA2HC##		;A-HEX Out
+	LD	A,' '
+	CALL	COUT##
+	DJNZ	SBSEW
+	JP	MLDWT
+JPWBSE:	LD	DE,CWBSETX
+	JP	TXTOUT		;ERROR
+CWBSETX:DB	'WRBYTES: B1 B2 ... B10 (8Bit)',BEEP,'$'
+;---------------------------------------
+	; Command 'RDBYTES'
+LBSTX:	DB	'RDBYTES ','$'
+CLBYTES:LD	DE,LBSTX
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JP	C,JPLBSE	;Error	
+	LD	HL,(PARG1)
+	CALL	EVAL##		;convert String
+	JP	C,JPLBSE	;Error
+	LD	(ARG1),DE	;Counter
+	LD	A,(ARGN)	;number of arguments
+	CP	1
+	JR	NZ,JPLBSE	;Error
+	LD	A,D
+	OR	E
+	JR	Z,JPLBSE	;Counter=0!
+HXDO:	LD	HL,(ARG1)	;Counter
+	LD	D,H
+	LD	E,L
+	LD	BC,16		;Counter bytes per line
+	OR	A
+	SBC	HL,BC
+	JR	NC,HXDOC
+	LD	B,D
+	LD	C,E		;rest
+	LD	HL,0
+HXDOC:	LD	(ARG1),HL
+	LD	DE,(KCNPTR)	;NAddress
+	LD	(ARG2),DE	;displayed ADR
+	LD	HL,LINEBF	;destination
+	PUSH	BC
+	CALL	N_RDBF		;read
+	POP	BC
+	LD	HL,(KCNPTR)
+	ADD	HL,BC
+	LD	(KCNPTR),HL	;synchronize local PTR
+	LD	HL,(ARG2)	;displayed ADR
+	LD	DE,LINEBF	;local memory ADR
+	CALL	DPMEMO		;HEX+ASC Out
+	CALL	NEWLN
+	LD	HL,(ARG1)
+	LD	A,H
+	OR	L	
+	JP	Z,MLDWT		;COUNTER=0:End
+	JR	HXDO		;continue
+JPLBSE:	LD	DE,CLBSETX
+	JP	TXTOUT		;ERROR
+CLBSETX:DB	'RDBYTES: COUNTER (16Bit)',BEEP,'$'
+;---------------------------------------
+	; Command 'WRBYTE'
+WBTX:	DB	'WRBYTE ','$'
+CSBYTE:	LD	DE,WBTX
+	CALL	ZKOUT
+	LD	B,2		;2 Parameter
+	CALL	INPUT
+	JR	C,JPWBE		;Error	
+	LD	HL,(PARG1)
+	CALL	EVAL##		;convert String
+	JR	C,JPWBE		;Error
+	LD	(ARG1),DE
+	LD	HL,(PARG2)
+	CALL	EVAL##		;convert String
+	JR	C,JPWBE		;Error
+	XOR	A
+	OR	D
+	JR	NZ,JPWBE	;>8Bit
+	LD	(ARG2),DE
+	LD	A,(ARGN)	;number of arguments
+	CP	2		
+	JR	NZ,JPWBE
+	LD	HL,(ARG1)	;ADR
+	LD	DE,(ARG2)	;BYTE
+	LD	A,E
+	CALL	N_WRBT		;Command
+	;Echo
+	LD	HL,(ARG1)
+	CALL	PHL4HC##	;HL-HEX Out
+	LD	A,'='
+	CALL	COUT##
+	LD	A,(ARG2)
+	CALL	PA2HC##		;A-HEX Out
+	JP	MLDWT
+JPWBE:	LD	DE,CWBETX
+	JP	TXTOUT		;ERROR
+CWBETX:	DB	'WRBYTE: ADR (16Bit) BYTE (8Bit)',BEEP,'$'
+;---------------------------------------
+	; Command 'RDBYTE'	
+LBTX:	DB	'RDBYTE ','$'
+CLBYTE:	LD	DE,LBTX
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	C,JPLBE		;Error	
+	LD	HL,(PARG1)
+	CALL	EVAL##		;convert String
+	JR	C,JPLBE		;Error
+	LD	(ARG1),DE
+	LD	A,(ARGN)	;number of arguments
+	LD	HL,(ARG1)	;ADR
+	CP	1
+	JR	NZ,JPLBE	;Error
+	CALL	N_RDBT		;Command
+	;Echo
+	PUSH	AF		;answer
+	LD	HL,(ARG1)
+	CALL	PHL4HC##	;HL-HEX Out
+	LD	A,'='
+	CALL	COUT##
+	POP	AF
+	CALL	PA2HC##		;A-HEX Out
+	JP	MLDWT
+JPLBE:	LD	DE,CLBETX
+	JP	TXTOUT		;ERROR
+CLBETX:	DB	'RDBYTE: ADR (16Bit)',BEEP,'$'
+;---------------------------------------
+	; Command 'INTERFACE-ID'
+KENNUNG:LD	HL,LINEBF
+	CALL	N_INFO
+	EX	DE,HL
+	CALL	ZKOUT
+	JP	MLDWT
+;---------------------------------------
+	; Command 'TIMER'
+TIMTX1:	DB	'TIMER = ','$'
+TIMTX2:	DB	' ms',CR,LF,'$'
+TIMER:	LD	DE,TIMTX1
+	CALL	ZKOUT
+	CALL	N_TIME
+	CALL	PHLFDC##
+	LD	DE,TIMTX2
+	CALL	ZKOUT
+	JP	MLDWT
+;---------------------------------------
+	; Command 'SERVER IP-ADDRESSES'
+SIATX1:	DB	' SERVER IP-ADDRESSES',CR,LF
+	DB	'DNS : ','$'
+	DB	'S 1 : ','$'
+	DB	'S 2 : ','$'
+	DB	'S 3 : ','$'
+	DB	'S 4 : ','$'
+	DB	'S 5 : ','$'
+	DB	'S 6 : ','$'
+	DB	'S 7 : ','$'
+SRVIPA:	LD	DE,SIATX1
+	LD	A,N_DNSIP
+	LD	B,8
+SRVIPC:	CALL	ZKOUT
+	LD	HL,I_ATMP
+	PUSH	HL
+	CALL	N_RIPA		;load IP
+	POP	HL
+	CALL	IPOUT
+	CALL	NEWLN
+	INC	A
+	DJNZ	SRVIPC	
+	JP	MLDWT
+;---------------------------------------
+	; Command 'DYNAMIC PORT'
+DYPTX1:	DB	'DYNAMIC PORT = ','$'
+DYPNOR:	DB	0,0
+DYPHOR:	DB	0,0
+DYNPRT:	LD	DE,DYPTX1
+	CALL	ZKOUT
+	CALL	N_DPRT
+	LD	(DYPNOR),HL
+	LD	HL,DYPHOR
+	LD	DE,DYPNOR
+	CALL	NTOHS
+	LD	HL,(DYPHOR)
+	CALL	PHLFDC##
+	CALL	NEWLN
+	JP	MLDWT
+;---------------------------------------
+	; Command 'COMMAND ERRORS'
+KDFTX1:	DB	'COMMAND ERRORS = ','$'
+CMDERR:	LD	DE,KDFTX1
+	CALL	ZKOUT
+	CALL	N_CERR
+	CALL	PHLFDC##
+	CALL	NEWLN
+	JP	MLDWT
+	
+;#######################################################
+;### TCP/IP-Stack Functions ############################
+;#######################################################
+	; Command 'IP-CONFIG'
+TEXT1:	DB	CR,LF
+	DB	'### KCNet Network-Configuration ###',CR,LF
+	DB	'  Ethernet adapter Net4CPC - W5100S',CR,LF,LF
+	DB	'        Network: ','$'
+TEXT2:	DB	'configured','$'
+TEXT3:	DB	'not configured','$'
+TXDNSN:	DB	CR,LF
+	DB	'       DNS-Name: ','$'
+TEXT4:	DB	CR,LF,LF
+	DB	'    MAC-Address: ','$'
+TEXT5:	DB	CR,LF
+	DB	'     IP-Address: ','$'
+TEXT6:	DB	CR,LF
+	DB	'     Subnetmask: ','$'
+TEXT7:	DB	CR,LF
+	DB	'Network Gateway: ','$'
+TEXT8:	DB	CR,LF
+	DB	'     DNS-Server: ','$'
+TEXT9:	DB	CR,LF,LF
+	DB	' TCP Retry Time: ','$'
+TEXT10:	DB	' (*100us)'
+	DB	CR,LF
+	DB	'TCP Retry Count: ','$'
+IPCONF:	;read TCP-Timing, NW settings and DNS-IP
+	LD	HL,N_RTR0	;rd RTR
+	LD	DE,KCNRTR
+	CALL	N_RDBT
+	LD	(DE),A		;HWB
+	INC	HL
+	INC	DE
+	CALL	N_RDBT
+	LD	(DE),A		;NWB
+	LD	HL,HCNRTR
+	DEC	DE
+	CALL	NTOHS		;to HOrder 
+	LD	HL,N_RCNR	;rd RCN
+	CALL	N_RDBT
+	LD	(KCNRCR),A
+	CALL	GTTNET		;NW settings
+	LD	A,N_DNSIP
+	LD	HL,LOCDNS
+	CALL	N_RIPA		;DNS-IP
+	;settings OUT
+	LD	DE,TEXT1
+	CALL	ZKOUT
+	LD	DE,TEXT2
+	JR	NZ,IPCNF1
+	LD	DE,TEXT3
+IPCNF1:	CALL	ZKOUT
+	JR	Z,IPCNF2	;lokal-IP=4*000
+	LD	HL,LOCDNS
+	XOR	A
+	CALL	CPA4BT
+	JR	Z,IPCNF2	;DNS-IP=4*000
+	CALL	ONTEST
+	JR	C,IPCNF2	;offline
+	LD	HL,SRCIP
+	LD	DE,DMNBUF
+	PUSH	DE
+	LD	BC,4
+	LDIR			;copy lokal IP
+	POP	DE
+	LD	HL,LINEBF
+	CALL	GHBADR		;iquery:(DE)IP->(DE)Name
+	JR	NC,IPCNF3	;OK
+IPCNF2:	XOR	A
+	LD	(DMNBUF),A	;clear DNS-Name
+IPCNF3:	LD	HL,DMNBUF
+	XOR	A
+	OR	(HL)
+	JR	Z,IPCNF4	;skip DNS-Name
+	LD	DE,TXDNSN
+	CALL	ZKOUT
+	EX	DE,HL
+	CALL	ZKOUT
+IPCNF4:	LD	DE,TEXT4
+	CALL	ZKOUT
+	LD	HL,SRCMAC
+	CALL	MACOUT
+	LD	DE,TEXT5
+	CALL	ZKOUT
+	LD	HL,SRCIP
+	CALL	IPOUT
+	LD	DE,TEXT6
+	CALL	ZKOUT
+	LD	HL,SRCMSK
+	CALL	IPOUT
+	LD	DE,TEXT7
+	CALL	ZKOUT
+	LD	HL,SRCGTW
+	CALL	IPOUT
+	LD	DE,TEXT8
+	CALL	ZKOUT
+	LD	HL,LOCDNS
+	CALL	IPOUT
+	LD	DE,TEXT9
+	CALL	ZKOUT
+	LD	HL,(HCNRTR)
+	CALL	PHLFDC##	;RTR Out
+	LD	DE,TEXT10
+	CALL	ZKOUT
+	LD	A,(KCNRCR)
+	CALL	PAFDC##		;RCN Out
+	CALL	NEWLN
+	JP	MLDWT
+;---------------------------------------
+	; Command 'RESET TCP/IP-STACK'
+SRSTX:	DB	'Clear Network Configuration ?  Y-Yes  N-No  ESC-Break ','$'
+SOKTXT:	DB	'RESET successful.','$'
+SERTXT:	DB	'RESET failed.',BEEP,'$'
+SRESET: CALL	GTTNET		;read & test network config
+	LD	A,'Y'
+	JR	Z,SRESE4	;not configured
+	LD	DE,SRSTX
+	CALL	ZKOUT
+	JR	SRESE2
+SRESE1:	LD	A,BEEP
+	CALL	COUT##
+SRESE2:	CALL	CAPIN##		;Capitalized Input
+	CP	ETX
+	RET	Z		;Break
+	CP	ESC
+	RET	Z		;Break
+	CP	'Y'
+	JR	Z,SRESE3
+	CP	'N'
+	JR	NZ,SRESE1
+SRESE3:	CALL	NEWLN
+SRESE4:	PUSH	AF	
+	CALL	N_SWRS		;Software-Reset
+	POP	HL
+	PUSH	AF
+	LD	A,H
+	CP	'N'
+	CALL	Z,SETNET	;write back old network config
+	JR	Z,SRESE6
+	;'Y': reset KCNET-IP's	
+	LD	HL,I_ATMP
+	PUSH	HL
+	LD	BC,4
+	CALL	CLRMEM		;clear I_ATMP
+	POP	HL
+	LD	B,8
+SRESE5:	LD	A,B
+	DEC	A
+	PUSH	HL
+	CALL	N_WIPA		;clear all IP's in KCNET
+	POP	HL
+	DJNZ	SRESE5
+SRESE6:	POP	AF
+	LD	DE,SOKTXT
+	JR	Z,SRESE7	;Init OK
+	LD	DE,SERTXT
+SRESE7:	JP	TXTOUT		;Init Error
+;---------------------------------------
+	; Command 'IP-ADDRESS SIPR'
+IPETX:	DB	'IP-Parameter Error!',BEEP,'$'
+IPTX:	DB	'IP-ADDRESS SIPR (d.d.d.d): ','$'
+IPADRES:LD	DE,IPTX
+	LD	BC,N_SIP0	;Source-IP Addressregister 0
+	LD	HL,IPETX
+	CALL	PARSND
+	RET
+;----------------------------------------
+	; Command 'SUBNETMASK SUBR'
+SNETX:	DB	'SUBNETMASK-Parameter Error!',BEEP,'$'
+SNTX:	DB	'SUBNETMASK SUBR (d.d.d.d): ','$'
+SUBNETZ:LD	DE,SNTX
+	LD	BC,N_SUB0	;Subnet-Mask Addressregister 0
+	LD	HL,SNETX
+	CALL	PARSND
+	RET
+;----------------------------------------
+	; Command 'GATEWAY GWR'
+GWETX:	DB	'GATEWAY-Parameter Error!',BEEP,'$'
+GWTX:	DB	'GATEWAY GWR (d.d.d.d): ','$'
+GATEWAY:LD	DE,GWTX
+	LD	BC,N_GAW0	;Gateway-IP Addressregister 0
+	LD	HL,GWETX
+	CALL	PARSND
+	RET	C		;ERR
+	RET	Z		;no Input
+	;test empty DNS and copy GW  	
+	LD	A,N_DNSIP
+	LD	HL,I_ATMP
+	PUSH	HL
+	CALL	N_RIPA		;load DNS-IP
+	POP	HL
+	XOR	A
+	CALL	CPA4BT
+	RET	NZ		;DNS-IP<>4*000
+	CALL	GTTNET		;read network config
+	LD	A,N_DNSIP
+	LD	HL,SRCGTW
+	CALL	N_WIPA		;write GW to DNS-IP
+	RET
+;---------------------------------------
+	; Command 'MAC-ADDRESS SHAR'	
+MACTXT:	DB	'MAC-ADDRESS SHAR (RO): ','$'
+MACADR:	LD	DE,MACTXT
+	CALL	ZKOUT
+	CALL	GTTNET		;read network config
+	LD	HL,SRCMAC
+	CALL	MACOUT		;Out
+	CALL	NEWLN
+	JP	MLDWT
+;---------------------------------------
+	; Command 'RETRY-TIME RTR'	
+SRTTXA:	DB	'RETRY-TIME RTR*100us (dec.)',CR,LF
+	DB	'  current : ','$'
+SRTTXI:	DB	'0...65535 : ','$'
+RTRTIM:	LD	DE,SRTTXA
+	CALL	ZKOUT
+	LD	HL,N_RTR0	;rd RTR
+	LD	DE,KCNRTR
+	CALL	N_RDBT
+	LD	(DE),A		;HWB
+	INC	HL
+	INC	DE
+	CALL	N_RDBT
+	LD	(DE),A		;NWB
+	LD	HL,HCNRTR
+	DEC	DE
+	CALL	NTOHS		;to HOrder 
+	LD	HL,(HCNRTR)
+	CALL	PHLFDC##
+	CALL	NEWLN
+	JR	SETRTI
+SETRTW:	LD	A,BEEP		;Error
+	CALL	COUT##
+SETRTI:	LD	DE,SRTTXI
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,SETRTW	;>1
+	LD	A,(ARGN)
+	OR	A
+	RET	Z		;no Input
+	LD	HL,(PARG1)
+	CALL	ATOI		;convert String
+	JR	C,SETRTW
+	CALL	PAEVAL
+	JR	C,SETRTW
+	LD	(HCNRTR),DE
+	LD	HL,HCNRTR
+	LD	DE,KCNRTR
+	CALL	HTONS
+	EX	DE,HL
+	CALL	N_SRTI		;SET RETRY TIME
+	RET
+;---------------------------------------
+	; Command 'RETRY-COUNT RCR'	
+SRCTXA:	DB	'RETRY-COUNT RCR (dec.)',CR,LF
+	DB	'current : ','$'
+SRCTXI:	DB	'0...255 : ','$'
+RTRCNT:	LD	DE,SRCTXA
+	CALL	ZKOUT
+	LD	HL,N_RCNR	;rd RCN
+	CALL	N_RDBT
+	CALL	PAFDC##		;RCN Out
+	CALL	NEWLN
+	JR	SETRCI
+SETRCW:	LD	A,BEEP		;Error
+	CALL	COUT##
+SETRCI:	LD	DE,SRCTXI
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,SETRCW	;>1
+	LD	A,(ARGN)
+	OR	A
+	RET	Z		;no Input
+	LD	HL,(PARG1)
+	CALL	ATOI		;convert String
+	JR	C,SETRCW
+	CALL	PAEVAL
+	JR	C,SETRCW
+	XOR	A
+	OR	D
+	JR	NZ,SETRCW
+	CALL	N_SRCN		;SET RETRY COUNT
+	RET
+;---------------------------------------
+	; Command 'PING-ECHO ON/OFF'
+PRPLSW:	LD	HL,N_MODE
+	CALL	N_RDBT
+	XOR	MR_PB
+	LD	E,A
+	CALL	N_STMD
+	RET	
+;---------------------------------------
+	; Command 'SOCKET-MODE'
+SCKMT1:	DB	'  SOCKET-MODE',CR,LF,'$'
+SCKMT2:	DB	'FREE','$'
+SCKMT3:	DB	'TCP','$'
+SCKMT4:	DB	'UDP','$'
+SCKMT5:	DB	'IP RAW','$'
+SCKMT6:	DB	'MAC RAW','$'
+SCKMT7:	DB	'PPPoE','$'
+SCKMT8:	DB	'???','$'
+SCKMT9:	DB	'SOCKET ','$'
+SCKMTA:	DB	' : ','$'
+SCKMOD:	LD	DE,SCKMT1
+	CALL	ZKOUT
+	LD	B,MAXSCK
+	XOR	A		;So.-Nr.
+SCKMO1:	CALL	SOMOUT
+	INC	A
+	DJNZ	SCKMO1
+	JP	MLDWT
+	;
+SOMOUT:	PUSH	AF
+	LD	DE,SCKMT9
+	CALL	ZKOUT
+	CALL	PAFDC##
+	LD	DE,SCKMTA
+	CALL	ZKOUT
+	CALL	N_GSMD		;get Mode
+	LD	A,E
+	AND	7
+	LD	DE,SCKMT2
+	CP	SMR_CLOSE
+	JR	Z,SOMOU1
+	LD	DE,SCKMT3
+	CP	SMR_TCP
+	JR	Z,SOMOU1
+	LD	DE,SCKMT4
+	CP	SMR_UDP
+	JR	Z,SOMOU1
+	LD	DE,SCKMT5
+	CP	SMR_IPRAW
+	JR	Z,SOMOU1
+	LD	DE,SCKMT6
+	CP	SMR_MACRAW
+	JR	Z,SOMOU1
+	LD	DE,SCKMT7
+	CP	SMR_PPPOE
+	JR	Z,SOMOU1
+	LD	DE,SCKMT8
+SOMOU1:	CALL	ZKOUT		;Mode Out
+	CALL	NEWLN
+	POP	AF
+	RET
+	
+;#######################################################
+;### Network Functions #################################
+;#######################################################
+
+	; Command 'DHCP CLIENT'
+	
+;### DHCP PROTOCOL DEFINITIONS ###
+	;Message OP Code
+DO_REQUEST	EQU	1
+DO_REPLY	EQU	2
+	;States
+D_DISCOVER	EQU	1
+D_REQUEST	EQU	2
+D_LEASED	EQU	3
+D_REREQUEST	EQU	4		;not used
+D_RELEASE	EQU	5		;not used
+	;Message Types
+DM_NOMSG	EQU	0
+DM_DISCOVER	EQU	1
+DM_OFFER	EQU	2
+DM_REQUEST	EQU	3
+DM_DECLINE	EQU	4
+DM_ACK		EQU	5
+DM_NAK		EQU	6
+DM_RELEASE	EQU	7		;not used
+DM_INFORM	EQU	8		;not used
+	;Timing
+D_RETRY_MAX	EQU	6		;Retry's max.
+D_TIME_MAX	EQU	1000		;first Timeout 1s
+	;Hardware-Types
+D_10MBHTY	EQU	1
+D_100MBHTY	EQU	2
+D_HLENETH	EQU	6
+	;Magic Cookie
+D_MGC1		EQU	99
+D_MGC2		EQU	130
+D_MGC3		EQU	83
+D_MGC4		EQU	99
+	;DHCP Message
+RIP_MSGA	EQU	LINEBF		;destination in memory
+OPCODE		EQU	RIP_MSGA
+HTYPE		EQU	OPCODE+1
+HLEN		EQU	HTYPE+1
+HOPS		EQU	HLEN+1
+XID		EQU	HOPS+1
+SECS		EQU	XID+4
+FLAGS		EQU	SECS+2
+CIADDR		EQU	FLAGS+2
+YIADDR		EQU	CIADDR+4
+SIADDR		EQU	YIADDR+4
+GIADDR		EQU	SIADDR+4
+CHADDR		EQU	GIADDR+4
+SNAME		EQU	CHADDR+16
+FILE		EQU	SNAME+64
+OPT		EQU	FILE+128
+RIP_MSGE	EQU	OPT+312
+
+;### CONSTANTS ###
+	;---------------------------------------
+	;MESSAGE-HEADER (copy source)
+DH_MSGA:
+	DB	DO_REQUEST	;OPCODE
+	DB	D_10MBHTY	;HTYPE
+	DB	D_HLENETH	;HLEN
+	DB	0		;HOPS
+HXID:	DB	0,0,0,0		;XID
+	DB	0,0		;SECS
+	DB	80H,00H		;Broadcast-FLAGS
+DH_MSGL	EQU	$-DH_MSGA	;Header length
+	;---------------------------------------
+	;first part DHCP-OPTIONS (copy source)
+DO_MSG1:
+	DB	D_MGC1,D_MGC2,D_MGC3,D_MGC4	;Magic Cookie
+	;
+	DB	DHCPMESSAGETYPE,1
+DO_MTP:	DB	0
+	;
+	DB	DHCPCLIENTIDENTIFIER,7
+	DB	1
+DO_MAC:	DS	3,0
+DO_MNM:	DS	3,0
+DO_MLG1	EQU	$-DO_MSG1			;length 1. part
+	;---------------------------------------
+	;second part DHCP-OPTIONS
+	;(Hostname User-System for possible DNS-
+	;   registration through DHCP-Server)
+	;
+	;1 Byte HOSTNAME OPTION-CODE
+	;1 Byte HOSTNAME OPTION-LENGTH (length of x-Bytes: Name+0)
+	;x-Bytes ASCII-HOSTNAME + Zerobyte
+	;
+	;DO_2MLG - have to be calculated!	;length 2. part
+	;---------------------------------------
+	;third part DHCP-OPTIONS  (copy source)
+DO_MSG3:
+	DB	DHCPPARAMREQUEST,PARAML
+PARAM:	DB	SUBNETMASK
+	DB	ROUTERSONSUBNET
+	DB	DNS
+	DB	DOMAINNAME
+	DB	TIMESERVER
+	DB	NETBIOSNAMESERVER
+	DB	NETBIOSDGRAMDISTSERVER
+	DB	NETBIOSNODETYPE
+	DB	DHCPT1VALUE
+	DB	DHCPT2VALUE
+PARAML	EQU	$-PARAM
+DO_MLG3	EQU	$-DO_MSG3			;length 3. part
+
+;### DHCP-CLIENT ###
+	;Work-RAM
+HNMBUF:	DS	16,0		;Buffer for max. 15 CHR's + 0
+HNAMEL:	DB	0		;length Hostname+0
+NETDAT:	DB	0,0,0,0		;KCNET-IP
+	DB	0,0,0,0		;KCNET-MASK
+DSTATE:	DB	0		;DHCP-State
+DMTYPE:	DB	0		;DHCP-Message-Type
+D_CSCK:	DB	0		;Socket Handle
+D_CPRT:	DB	0,68		;local Port NOrder
+BCDATA:	DB	255,255,255,255	;Broadcast IP-address
+BCPORT:	DB	0,67		;DHCP-Server Port NOrder
+D_TMO:	DW	D_TIME_MAX	;Timeout ms
+D_STIM:	DW	0		;TIME Start
+DCOUNT:	DB	0		;Retry-Counter
+	;Outflags
+FLGOTB:	DB	0		;requested
+FDNS:	DB	0		;DNS-Server OK
+FTIME:	DB	0		;TIME-Server OK
+FDNNAM:	DB	0		;Domain-Name OK
+FNETBS:	DB	0		;NETBIOS-NameServer/DG-Server/nodeType OK
+FRNTIM:	DB	0		;lease Time OK
+FRBTIM:	DB	0		;renew Time OK
+	;
+DSRVIP:	DB	0,0,0,0		;IP-address RECEIVE FROM
+DSRVPT:	DB	0,0		;Port RECEIVE FROM
+DSRVDS:	DB	0,0		;DATA SIZE RECEIVE FROM NOrder
+HSRVDS:	DB	0,0		;DATA SIZE RECEIVE FROM HOrder
+REALIP:	DB	0,0,0,0		;real dhcp-server-ip from reply message (RECVFR)
+DHCPIP:	DB	0,0,0,0		;dhcp-server-ip from dhcpServerIdentifier (OPT)
+YIADR:	DB	0,0,0,0		;ip address received from the DHCP server (YIADDR)
+DGMASK:	DB	0,0,0,0		;Subnet mask received from the DHCP server
+DGGWIP:	DB	0,0,0,0		;1. GATEWAY ip address (ROUTER) received from the DHCP server
+DDNSIP:	DB	0,0,0,0		;1. DNS SERVER ip address received from the DHCP server
+DTIMIP:	DB	0,0,0,0		;1. TIME SERVER ip address received from the DHCP server
+DNBNIP:	DB	0,0,0,0		;1. netBIOSnameServer ip address received from the DHCP server
+DNBDGS:	DB	0,0,0,0		;1. netBIOSdiagrammServer ip address received from the DHCP server
+DNBNTP:	DB	0		;netBIOSnodeType received from the DHCP server
+RNTIME:	DB	0,0,0,0		;renew Time received from the DHCP server
+RBTIME:	DB	0,0,0,0		;rebind Time received from the DHCP server
+HTIME:	DB	0,0,0,0		;Time HOrder
+DWRAME:	;
+	;State-Messages
+D_CMXA:	DB	' ### DHCP CLIENT - copyright 2008 by >susowa< ### ',CR,LF,LF,'$'
+D_CMXB:	DB	'DHCP CLIENT CLOSED.',CR,LF,LF,'$'
+D_CMXC:	DB	'SEND DHCP-DISCOVER ... ','$'
+D_CMXD:	DB	'RECEIVED DHCP-OFFER',CR,LF,'$'
+D_CMXE:	DB	'SEND DHCP-REQUEST ... ','$'
+D_CMXF:	DB	'RECEIVED DHCP-ACK',CR,LF,'$'
+D_CMXG:	DB	'RECEIVED DHCP-NACK',CR,LF,'$'
+D_CMXH:	DB	'SEND DHCP-DECLINE ... ','$'
+D_CMXI:	DB	'SEND DHCP-RELEASE ... ','$'
+D_CMXJ:	DB	'NETWORK CONFIGURATION READY.',CR,LF,'$'
+D_CMXK:	DB	'DHCP CLIENT TIMEOUT ERROR !',BEEP,CR,LF,'$'
+D_CMXL:	DB	'IP-CONFLICT !',BEEP,CR,LF,'$'
+D_CMXM:	DB	'CHECK LEASED-IP ... ','$'
+D_CMXN:	DB	'SEARCH FOR DHCP-SERVER',CR,LF,'$'
+D_CMXO:	DB	'INPUT HOSTNAME WITH MAX. 15 CHARACTERS !',CR,LF
+	DB	'HOSTNAME: ','$'
+	;
+DHCPC:	;check NETWORK
+	CALL	ONTEST
+	JP	C,MLDWT
+	;get Host-Name
+	LD	DE,D_CMXO
+	CALL	ZKOUT
+	CALL	INPEER		;DE: Hostname+0 (DNB) / BC: length+0
+	RET	Z		;no Input
+	RET	C		;ERR
+	LD	HL,16
+	SBC	HL,BC
+	RET	C
+	LD	A,C
+	LD	(HNAMEL),A
+	EX	DE,HL
+	LD	DE,HNMBUF
+	LDIR			;copy new Hostname
+	;INIT
+	LD	HL,FLGOTB
+	LD	BC,DWRAME-FLGOTB
+	CALL	CLRMEM		;clear Work-RAM
+	LD	A,0FFH		;any
+	LD	D,SK_DGRAM	;Mode
+	LD	E,0		;Flags
+	CALL	SOCKET
+	LD	DE,TCPMXD	;'socket-error'
+	JP	C,D_SSE
+	LD	(D_CSCK),A
+	LD	HL,D_CPRT	;local Port
+	CALL	BIND
+	CALL	C,ZKOUT
+	JP	C,D_SCLE	;close
+	CALL	CONNECT
+	CALL	C,ZKOUT
+	JP	C,D_SCLE	;close
+	;CLS and prepare Client 
+	LD	A,CLS	
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	CALL	NEWLN
+	LD	HL,NETDAT
+	CALL	N_GLIP
+	CALL	N_GLMA		;get current Data
+	LD	A,D_LEASED	;default state
+	LD	(DSTATE),A
+	LD	HL,HXID		;make Header-XID
+	CALL	MZ4ID
+	LD	DE,D_CMXA	;'HEADING'
+	CALL	ZKOUT
+	CALL	RTIMEQ		;reset Timing/Packet
+	;ready
+D_LOOP:	CALL	CST##		;CON ?
+	JR	NZ,D_LPS1	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	;check break
+	CP	ETX
+	JP	Z,D_SCLE
+	CP	ESC
+	JP	Z,D_SCLE
+D_LPS1:	;check DHCP-State
+	LD	A,(DSTATE)
+	CP	D_DISCOVER
+	JR	NZ,D_LPS2
+	LD	A,(DMTYPE)
+	CP	DM_OFFER
+	JP	NZ,D_CSST	;wait for offer
+	LD	DE,D_CMXD	;'received offer'
+	CALL	ZKOUT
+	CALL	DS_RQU		;send request MSG
+	JP	C,D_SCLE	;close
+	LD	A,D_REQUEST
+	LD	(DSTATE),A	;switch to request
+	CALL	RTIMEQ		;reset
+	JP	D_CSST
+D_LPS2:	CP	D_REQUEST
+	JP	NZ,D_LPS3
+	LD	A,(DMTYPE)
+	CP	DM_ACK
+	JR	NZ,D_LP23	;wait for ACK
+	LD	DE,D_CMXF	;'received ack'
+	CALL	ZKOUT
+	;check leased IP
+	LD	DE,D_CMXM	;'check leased'
+	CALL	ZKOUT
+	LD	HL,YIADR	;leased IP ...
+	LD	DE,DSRVIP
+	PUSH	DE
+	LD	BC,4
+	LDIR			;= Peer IP
+	CALL	N_DPRT		;read in NOrder
+	LD	(DSRVPT),HL	;= dynamic Port Sender
+	LD	HL,D_CMXL	;Data
+	POP	DE
+	LD	BC,11		;Data length
+	LD	A,(D_CSCK)	;Socket
+	CALL	SENDTO
+	LD	DE,D_CMXL	;'ip-conflict'
+	JR	NC,D_LP21
+	LD	DE,TCPMXE	;'OK'
+D_LP21:	CALL	ZKOUT
+	JR	C,D_LP22	;if SENDTO-ERROR = leased IP is OK!
+	;ERR->
+	CALL	DS_DCL		;send decline MSG
+	JP	C,D_SCLE	;close
+	JR	D_LP24
+D_LP22:	;OK ->
+	LD	HL,YIADR	;set NETWORK		
+	CALL	N_SLIP		;IP
+	CALL	N_SLMA		;MASK
+	CALL	N_SGTW		;GATEWAY
+	LD	HL,NETDAT
+	CALL	N_GLIP
+	CALL	N_GLMA		;new = current Data
+	LD	A,(FDNS)
+	OR	A
+	LD	A,N_DNSIP
+	LD	HL,DGGWIP	;gateway
+	JR	Z,D_LPND	;if no DNS -> GW-IP to N_DNSIP
+	LD	HL,DDNSIP	;dns-server
+D_LPND:	CALL	N_WIPA		;write IP to N_DNSIP
+	LD	A,0FFH
+	LD	(FLGOTB),A	;DHCP-Request successful
+	LD	A,D_LEASED	;switch to leased
+	JR	D_LP25
+D_LP23:	CP	DM_NAK
+	JR	NZ,D_CSST	;wait for NAK
+	LD	DE,D_CMXG	;'received nack'
+	CALL	ZKOUT
+D_LP24:	LD	A,D_DISCOVER
+D_LP25:	LD	(DSTATE),A	;switch to discover
+	CALL	RTIMEQ		;reset
+	JR	D_CSST
+D_LPS3:	CP	D_LEASED
+	JR	NZ,D_LPS4
+	XOR	A
+	LD	HL,NETDAT
+	CALL	CPA4BT
+	JR	Z,D_LP31	;KCNET-IP=4*000
+	LD	HL,NETDAT+4
+	CALL	CPA4BT
+	JR	Z,D_LP31	;KCNET-MASK=4*000
+	LD	DE,D_CMXJ	;'network ready'
+	CALL	ZKOUT	
+	JR	D_SCLE		;goto end with close
+D_LP31:	LD	DE,D_CMXN	;'search dhcp srv'
+	CALL	ZKOUT	
+	CALL	DS_DSC		;send discover MSG
+	JR	C,D_SCLE	;close
+	LD	A,D_DISCOVER
+	LD	(DSTATE),A	;switch to discover
+	JR	D_CSST
+D_LPS4:	CP	D_REREQUEST
+	JR	NZ,D_LPS5
+	;REREQUEST not used
+	JR	D_CSST
+D_LPS5:	CP	D_RELEASE
+	JR	NZ,D_CSST
+	;RELEASE not used
+D_CSST:	;check Receiver
+	CALL	DR_MSG
+	;check Timeout
+	LD	DE,(D_STIM)
+	CALL	CALCPT		;get Time-Difference in ms
+	LD	DE,(D_TMO)
+	OR	A
+	SBC	HL,DE
+	JR	C,D_CSCN	;wait up to Timeout
+	LD	HL,(D_TMO)
+	ADD	HL,HL		;Timeout*2
+	LD	(D_TMO),HL	;= next Timeout
+	LD	HL,DCOUNT
+	INC	(HL)		;retry+1
+	LD	A,(HL)
+	CP	D_RETRY_MAX
+	LD	DE,D_CMXK	;'timeout'
+	CALL	NC,ZKOUT
+	JR	NC,D_SCLE	;close
+	LD	A,(DSTATE)
+	CP	D_DISCOVER
+	JR	NZ,D_CRT1
+	CALL	DS_DSC		;resend discover MSG
+	JR	C,D_SCLE	;close
+	JR	D_CRT2
+D_CRT1:	CP	D_REQUEST
+	JR	NZ,D_CSCN
+	CALL	DS_RQU		;resend request MSG
+	JR	C,D_SCLE	;close
+D_CRT2:	CALL	N_TIME
+	LD	(D_STIM),HL	;save TIME Start
+D_CSCN:	;check socket State
+	LD	A,(D_CSCK)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	INC	E
+	DEC	E		;offline ?
+	JP	NZ,D_LOOP	;loop
+	;close & break
+D_SCLE:	LD	A,(D_CSCK)
+	CALL	CLOSE
+	LD	DE,D_CMXB	;offline
+D_SSE:	CALL	ZKOUT
+	LD	A,(FLGOTB)
+	OR	A
+	JP	Z,D_WAIT	;not requested
+	;server-request Data-Out
+	LD	DE,DOTX1
+	CALL	ZKOUT
+	LD	HL,DHCPIP
+	CALL	IPOUT
+	LD	DE,DOTX2
+	CALL	ZKOUT
+	LD	HL,YIADR
+	CALL	IPOUT
+	LD	DE,DOTX3
+	CALL	ZKOUT
+	LD	HL,DGMASK
+	CALL	IPOUT
+	LD	DE,DOTX4
+	CALL	ZKOUT
+	LD	HL,DGGWIP
+	CALL	IPOUT
+	LD	A,(FDNS)
+	OR	A
+	JR	Z,DRQO1
+	LD	DE,DOTX5
+	CALL	ZKOUT
+	LD	HL,DDNSIP
+	CALL	IPOUT
+DRQO1:	LD	A,(FTIME)
+	OR	A
+	JR	Z,DRQO2
+	LD	DE,DOTX6
+	CALL	ZKOUT
+	LD	HL,DTIMIP
+	CALL	IPOUT
+DRQO2:	LD	A,(FDNNAM)
+	OR	A
+	JR	Z,DRQO3
+	LD	DE,DOTX7
+	CALL	ZKOUT
+	LD	DE,DMNBUF
+	CALL	ZKOUT
+DRQO3:	LD	A,(FNETBS)
+	OR	A
+	JR	Z,DRQO4
+	LD	DE,DOTX8
+	CALL	ZKOUT
+	BIT	0,A
+	JR	Z,DRQNB1
+	LD	HL,DNBNIP
+	CALL	IPOUT		;NBNS
+	LD	DE,DNBNS
+	CALL	ZKOUT
+DRQNB1:	BIT	1,A
+	JR	Z,DRQNB2
+	LD	HL,DNBDGS
+	CALL	IPOUT		;NBDD
+	LD	DE,DNBDD
+	CALL	ZKOUT
+DRQNB2:	BIT	2,A
+	JR	Z,DRQO4
+	LD	A,(DNBNTP)
+	CALL	PAFDC##		;NODE
+	LD	DE,DNODE
+	CALL	ZKOUT
+DRQO4:	LD	A,(FRNTIM)
+	OR	A
+	JR	Z,DRQO5
+	LD	DE,DOTX9
+	CALL	ZKOUT
+	LD	HL,RNTIME
+	CALL	N32OUT
+DRQO5:	LD	A,(FRBTIM)
+	OR	A
+	JR	Z,DRQO6
+	LD	DE,DOTXA
+	CALL	ZKOUT
+	LD	HL,RBTIME
+	CALL	N32OUT
+DRQO6:	CALL	NEWLN	
+D_WAIT:	JP	MLDWT		;wait
+;### Request-Output ###
+DOTX1:	DB	'          ### NETWORK-CONFIGURATION ###',CR,LF
+	DB	' DHCP-SERVER: ','$'
+DOTX2:	DB	CR,LF
+	DB	'    LOCAL IP: ','$'
+DOTX3:	DB	CR,LF
+	DB	'     NETMASK: ','$'
+DOTX4:	DB	CR,LF
+	DB	'     GATEWAY: ','$'
+DOTX5:	DB	CR,LF
+	DB	'  DNS-SERVER: ','$'
+DOTX6:	DB	CR,LF
+	DB	' TIME-SERVER: ','$'
+DOTX7:	DB	CR,LF
+	DB	'      DOMAIN: ','$'
+DOTX8:	DB	CR,LF
+	DB	'     NETBIOS: ','$'
+DOTX9:	DB	CR,LF
+	DB	'  RENEW TIME: ','$'
+DOTXA:	DB	CR,LF
+	DB	' REBIND TIME: ','$'
+DNBNS:	DB	' (NBNS)  ','$'
+DNBDD:	DB	' (NBDD)  ','$'
+DNODE:	DB	' (NODE)','$'
+;### Sub-programs ###
+	;Quit Packet/Reset Timer
+RTIMEQ:	LD	A,DM_NOMSG
+	LD	(DMTYPE),A	;reset Reply Message Type
+	LD	(DCOUNT),A	;reset Retry-Counter
+	CALL	N_TIME
+	LD	(D_STIM),HL	;reset TIME to NOW
+	LD	HL,D_TIME_MAX
+	LD	(D_TMO),HL	;reset Timeout to first value
+	RET
+	;make Send-Message
+MSDMSG:	PUSH	AF
+	;clear Send-Buffer	
+	LD	HL,LINEBF
+	LD	BC,MAXSEG
+	CALL	CLRMEM
+	;copy Header
+	LD	HL,DH_MSGA	;MSG-Header
+	LD	DE,LINEBF	;Send-Buffer
+	LD	BC,DH_MSGL	;Header length
+	LDIR
+	;make OPTIONS 1.Part
+	LD	HL,CHADDR
+	CALL	N_GLMC		;write HMAC
+	POP	AF
+	LD	(DO_MTP),A	;write MSG-Type 
+	LD	HL,DO_MAC
+	CALL	N_GLMC		;write OMAC
+	;copy OPTIONS 1.Part
+	LD	HL,DO_MSG1
+	LD	DE,OPT
+	LD	BC,DO_MLG1
+	LDIR
+	;make OPTIONS 2.Part direct
+	LD	A,HOSTNAME
+	LD	(DE),A		;Option Code
+	INC	DE
+	LD	A,(HNAMEL)
+	LD	(DE),A		;length Name+0
+	INC	DE
+	LD	HL,HNMBUF
+	LD	B,0
+	LD	C,A
+	LDIR			;Hostname+0
+	RET
+	;copy OPTIONS 3.Part
+MSDOP3:	LD	HL,DO_MSG3
+	LD	BC,DO_MLG3
+	LDIR
+	RET
+	;make OPTIONS 4.Part direct: RQIP/SRVID/endOption
+MSDOP4:	LD	A,dhcpRequestedIPaddr
+	LD	(DE),A
+	INC	DE
+	LD	A,4
+	LD	(DE),A
+	INC	DE
+	LD	HL,YIADR
+	LD	BC,4
+	LDIR			;your IP
+	LD	A,dhcpServerIdentifier
+	LD	(DE),A
+	INC	DE
+	LD	A,4
+	LD	(DE),A
+	INC	DE
+	LD	HL,DHCPIP
+	LD	BC,4
+	LDIR			;DHCP-SRV IP
+	;write endOption direct
+MSDOPE:	LD	A,endOption
+	LD	(DE),A
+	RET
+;### DHCP Client/Server MESSAGES ###
+	;Send discover message
+DS_DSC:	LD	HL,REALIP
+	LD	BC,8
+	CALL	CLRMEM		;clear real/DHCP-IP
+	LD	HL,NETDAT
+	PUSH	HL
+	LD	BC,4
+	CALL	CLRMEM		;clear local IP
+	POP	HL
+	CALL	N_SLIP		;and write
+	LD	A,DM_DISCOVER
+	CALL	MSDMSG		;header + 1./2. options part
+	CALL	MSDOP3		;3. options part
+	CALL	MSDOPE		;endOption
+	LD	DE,D_CMXC	;'discover'
+	CALL	ZKOUT
+	JR	DSDMSG
+	;Send request message
+DS_RQU:	LD	A,DM_REQUEST
+	CALL	MSDMSG		;header + 1./2. options part
+	CALL	MSDOP3		;3. options part	
+	CALL	MSDOP4		;4. options part + endOption
+	LD	DE,D_CMXE	;'request'
+	CALL	ZKOUT
+	JR	DSDMSG
+	;Send decline message
+DS_DCL:	LD	A,DM_DECLINE
+	CALL	MSDMSG		;header + 1./2. options part
+	CALL	MSDOP4		;4. options part + endOption
+	LD	DE,D_CMXH	;'decline'
+	CALL	ZKOUT
+DSDMSG:	LD	HL,LINEBF	;Data
+	LD	DE,BCDATA	;Peer Data
+	LD	BC,RIP_MSGE-RIP_MSGA ;DNS Message length
+	LD	A,(D_CSCK)	;Socket
+	CALL	SENDTO
+	LD	DE,TCPMX7	;'timeout'
+	JR	C,DSDMS1
+	LD	DE,TCPMXE	;'OK'
+DSDMS1:	CALL	ZKOUT
+	RET			;CY=1:ERR
+	;Receive packet and parse
+DR_MSG:	LD	A,(D_CSCK)
+	LD	E,SL_RECV
+	CALL	SELECT
+	RET	C		;no Data
+	LD	B,D
+	LD	C,E
+	LD	HL,LINEBF
+	LD	DE,DSRVIP
+	CALL	RECVFR
+	;parse Packet
+	LD	A,(OPCODE)
+	CP	DO_REPLY
+	RET	NZ		;no REPLY-MSG
+	LD	HL,(DSRVPT)
+	LD	DE,(BCPORT)
+	SBC	HL,DE
+	RET	NZ		;no DHCP-Server-Port
+	LD	HL,DO_MAC
+	LD	DE,CHADDR
+	CALL	CMP6BT
+	RET	NZ		;Packet-MAC<>LocalMAC
+	LD	HL,HXID
+	LD	DE,XID
+	CALL	CMP4BT
+	RET	NZ		;Packet-XID<>expected XID
+	LD	HL,DHCPIP
+	XOR	A
+	CALL	CPA4BT
+	JR	Z,DR_MS1	;DHCP-SRV-IP not yet saved
+	LD	HL,REALIP
+	LD	DE,DSRVIP
+	PUSH	DE
+	CALL	CMP4BT
+	POP	DE
+	RET	NZ		;REALIP<>REC-IP
+	LD	HL,DHCPIP
+	CALL	CMP4BT
+	RET	NZ		;DHCPIP<>REC-IP
+DR_MS1:	LD	HL,YIADDR
+	LD	DE,YIADR
+	LD	BC,4
+	LDIR			;save YOUR-IP
+	LD	HL,HSRVDS
+	LD	DE,DSRVDS
+	CALL	NTOHS
+	LD	HL,(HSRVDS)	;DataSize MSG
+	LD	DE,LINEBF
+	ADD	HL,DE		;last ADR MSG
+	EX	DE,HL
+	;parse OPTIONS
+	PUSH	DE
+	LD	HL,OPT
+	LD	DE,DO_MSG1
+	CALL	CMP4BT
+	POP	DE
+	RET	NZ		;Magic-Cookie wrong
+	PUSH	DE
+DR_MS2:	POP	DE
+	PUSH	HL
+	OR	A
+	SBC	HL,DE
+	POP	HL
+	RET	NC		;MSG parsed
+	PUSH	DE
+	LD	A,(HL)		;Option Code
+	INC	HL
+	LD	B,(HL)		;length Option Area
+	;pad
+	CP	PADOPTION
+	JR	Z,DR_MS2
+	INC	HL		;HL = 1.Parameter!
+	;message-typ
+	CP	DHCPMESSAGETYPE
+	JR	NZ,DR_MS3
+	LD	A,(HL)
+	LD	(DMTYPE),A	;set Message-Type
+	INC	HL
+	JR	DR_MS2
+	;server-ID
+DR_MS3:	CP	DHCPSERVERIDENTIFIER
+	JR	NZ,DR_MS4
+	PUSH	HL
+	PUSH	BC
+	LD	HL,DHCPIP	;DHCP-SRV-IP
+	XOR	A
+	CALL	CPA4BT
+	POP	BC
+	POP	HL
+	JR	Z,CPDHCP	;=0: save DHCP-SRV-IP
+	PUSH	HL
+	PUSH	BC
+	LD	HL,DSRVIP	;real Send IP
+	LD	DE,REALIP	;saved real Send IP
+	CALL	CMP4BT
+	POP	BC
+	POP	HL
+	JR	Z,CPDHCP	;= -> save
+	PUSH	HL
+	PUSH	BC
+	LD	HL,DSRVIP	;real Send IP
+	LD	DE,DHCPIP	;saved DHCP-SRV-IP
+	CALL	CMP4BT
+	POP	BC
+	POP	HL
+	JR	NZ,DRSKIP	;<> -> skip
+CPDHCP:	LD	DE,DHCPIP	;DHCP-SRV-IP
+	LD	BC,4	
+	LDIR			;save
+	PUSH	HL
+	LD	HL,DSRVIP	;real Send IP
+	LD	DE,REALIP
+	LD	BC,4
+	LDIR			;save
+	POP	HL
+	JR	DR_MS2
+	;end-option
+DR_MS4:	CP	ENDOPTION
+	JR	Z,DR_MSE
+	;check REQUEST-OPTION Table
+	EX	DE,HL		;DE-ADR OPT-Parameter
+	LD	HL,OPTABL
+	LD	C,(HL)		;length TAB
+	INC	HL		;1.RQ-OPTION
+DR_MS5:	CP	(HL)
+	INC	HL		;ADR DW-OPT in Table
+	JR	NZ,DR_MS6	;<>next OPT
+	;CALL OPT-Sub
+	LD	A,(HL)
+	INC	HL
+	LD	H,(HL)
+	LD	L,A
+	LD	C,B		;copy LENGTH Option Area for PI
+	CALL	CJPHL
+	JR	DR_MS2		;continue
+DR_MS6:	INC	HL
+	INC	HL
+	DEC	C
+	JR	NZ,DR_MS5	;next OPT
+	;no OPTAB-Option
+	EX	DE,HL
+	;skip unused Options
+DRSKIP:	INC	HL
+	DJNZ	DRSKIP
+	JP	DR_MS2
+	;ready
+DR_MSE:	POP	DE
+	RET
+	;REQUEST-OPTION Table
+OPTABL:	DB	(OPTABE-OPTABA)/3 	;length TABLE
+OPTABA:	DB	SUBNETMASK
+	DW	OSUBNETMASK
+	DB	ROUTERSONSUBNET
+	DW	OROUTERSONSUBNET
+	DB	DNS
+	DW	ODNS
+	DB	DOMAINNAME
+	DW	ODOMAINNAME
+	DB	TIMESERVER
+	DW	ODOMAINNAME
+	DB	NETBIOSNAMESERVER
+	DW	ONETBIOSNAMESERVER
+	DB	NETBIOSDGRAMDISTSERVER
+	DW	ONETBIOSDGRAMDISTSERVER
+	DB	NETBIOSNODETYPE
+	DW	ONETBIOSNODETYPE
+	DB	DHCPT1VALUE
+	DW	ODHCPT1VALUE
+	DB	DHCPT2VALUE
+	DW	ODHCPT2VALUE
+OPTABE:	
+	;Request-Parameter Sub-programs
+;PI: DE-ADR OPTION-Parameter
+;     B-Length Option Area
+;     C-Length Option Area (Copy from B)
+;PO: !HL!-ADR after OPT-Parameter
+OSUBNETMASK:
+	LD	HL,DGMASK
+	JR	OCOPY4
+OROUTERSONSUBNET:
+	LD	HL,DGGWIP
+OROUT1:	EX	DE,HL
+	LD	B,4
+OROUT2:	LD	A,(HL)	
+	LD	(DE),A
+	INC	HL
+	INC	DE	
+	DEC	C
+	DJNZ	OROUT2
+	XOR	A
+	OR	C
+	RET	Z		;ready (there is only 1 Parameter)
+	LD	B,A
+OROUT3:	INC	HL
+	DJNZ	OROUT3		;skip follow
+	RET
+ODNS:
+	LD	HL,FDNS
+	LD	(HL),0FFH
+	LD	HL,DDNSIP
+	JR	OROUT1
+ODOMAINNAME:
+	LD	HL,FDNNAM
+	LD	(HL),0FFH
+	EX	DE,HL
+	LD	DE,DMNBUF
+	LD	B,0
+	LDIR
+	LD	A,'$'
+	LD	(DE),A		;string + $
+	RET
+OTIMESERVER:
+	LD	HL,FTIME
+	LD	(HL),0FFH
+	LD	HL,DTIMIP
+	JR	OROUT1
+ONETBIOSNAMESERVER:
+	LD	HL,FNETBS
+	SET	0,(HL)
+	LD	HL,DNBNIP
+	JR	OROUT1
+ONETBIOSDGRAMDISTSERVER:
+	LD	HL,FNETBS
+	SET	1,(HL)
+	LD	HL,DNBDGS
+	JR	OROUT1
+ONETBIOSNODETYPE:
+	LD	HL,FNETBS
+	SET	2,(HL)
+	EX	DE,HL
+	LD	DE,DNBNTP
+	LDI
+	RET
+ODHCPT1VALUE:
+	LD	HL,FRNTIM
+	LD	(HL),0FFH
+	LD	HL,RNTIME
+	JR	OCOPY4
+ODHCPT2VALUE:
+	LD	HL,FRBTIM
+	LD	(HL),0FFH
+	LD	HL,RBTIME
+OCOPY4:	EX	DE,HL
+	LD	B,0
+	LDIR
+	RET
+;### defined DHCP OPTIONS and VALUES (look at RFC1533) ###
+PADOPTION		EQU	0
+SUBNETMASK		EQU	1
+timerOffset		EQU	2
+ROUTERSONSUBNET		EQU	3
+TIMESERVER		EQU	4
+nameServer		EQU	5
+DNS			EQU	6
+logServer		EQU	7
+cookieServer		EQU	8
+lprServer		EQU	9
+impressServer		EQU	10
+resourceLocationServer	EQU	11
+HOSTNAME		EQU	12
+bootFileSize		EQU	13
+meritDumpFile		EQU	14
+DOMAINNAME		EQU	15
+swapServer		EQU	16
+rootPath		EQU	17
+extentionsPath		EQU	18
+IPforwarding		EQU	19
+nonLocalSourceRouting	EQU	20
+policyFilter		EQU	21
+maxDgramReasmSize	EQU	22
+defaultIPTTL		EQU	23
+pathMTUagingTimeout	EQU	24
+pathMTUplateauTable	EQU	25
+ifMTU			EQU	26
+allSubnetsLocal		EQU	27
+broadcastAddr		EQU	28
+performMaskDiscovery	EQU	29
+maskSupplier		EQU	30
+performRouterDiscovery	EQU	31
+routerSolicitationAddr	EQU	32
+staticRoute		EQU	33
+trailerEncapsulation	EQU	34
+arpCacheTimeout		EQU	35
+ethernetEncapsulation	EQU	36
+tcpDefaultTTL		EQU	37
+tcpKeepaliveInterval	EQU	38
+tcpKeepaliveGarbage	EQU	39
+nisDomainName		EQU	40
+nisServers		EQU	41
+ntpServers		EQU	42
+vendorSpecificInfo	EQU	43
+NETBIOSNAMESERVER	EQU	44
+NETBIOSDGRAMDISTSERVER	EQU	45
+NETBIOSNODETYPE		EQU	46
+netbiosscope		EQU	47
+xFontServer		EQU	48
+xDisplayManager		EQU	49
+DHCPREQUESTEDIPADDR	EQU	50
+dhcpIPaddrLeaseTime	EQU	51
+dhcpOptionOverload	EQU	52
+DHCPMESSAGETYPE		EQU	53
+DHCPSERVERIDENTIFIER	EQU	54
+DHCPPARAMREQUEST	EQU	55
+dhcpMsg			EQU	56
+dhcpMaxMsgSize		EQU	57
+DHCPT1VALUE		EQU	58
+DHCPT2VALUE		EQU	59
+dhcpClassIdentifier	EQU	60
+dhcpClientIdentifier	EQU	61
+ENDOPTION		EQU	255
+	
+;---------------------------------------
+
+	; Command 'PING CLIENT'
+
+;### PING-VERSION ###
+P_MAJOR	EQU	1
+P_MINOR	EQU	3
+	;
+;### PING PROTOCOL DEFINITIONS ###
+	;PING MESSAGE TYPES
+PECHOREPLY	EQU	0	;Echo Reply
+PDESTUNREACH	EQU	3	;Destination Unreachable
+PSOURCEQUENCH	EQU	4	;Source Quench
+PICMPREDIRECT	EQU	5	;ICMP Redirect
+PECHOREQUEST	EQU	8	;Echo Request
+PRTADVERT	EQU	9	;Router Advertisement Message
+PRTSOLICIT	EQU	10	;Router Solicitation Message
+PTIMEEXCEED	EQU	11	;Time Exceeded (TTL=0)
+PPARAMPROBLEM	EQU	12	;Parameter Problem
+PTSREQUEST	EQU	13	;Timestamp Request
+PTSREPLY	EQU	14	;Timestamp Reply
+PINFREQUEST	EQU	15	;Information Request
+PINFREPLY	EQU	16	;Information Reply
+PAMSKREQUEST	EQU	17	;Address Mask Request
+PAMSKREPLY	EQU	18	;Address Mask Reply
+	;
+;---- PING MESSAGE STRUCTURE ----
+P_MSG	EQU	LINEBF
+P_TYPE	EQU	P_MSG		;0 - Ping Reply, 8 - Ping Request
+P_CODE	EQU	P_TYPE+1	;always 0
+P_CHKS	EQU	P_CODE+1	;Checksum
+P_ID	EQU	P_CHKS+2	;Ping-ID
+P_SQNM	EQU	P_ID+2		;Sequence Number
+P_DATA	EQU	P_SQNM+2	;Ping Data max. = IP RAW MTU - sizeof(Type+Code+Checksum+ID+SeqNum)
+P_MSGE	EQU	P_DATA+P_MDSZ	;default Data-Size
+;--------------------------------
+	;
+P_MHDL	EQU	P_DATA-P_TYPE	;PING Message Headerlength
+P_MDSZ	EQU	56		;PING Message default DataSize
+	;
+P_LOGA:	;PING LOG
+	;transmitted
+PSRQCT:	DW	0000H		;Count of sent ping-requests
+	;received
+PRRPCT:	DW	0000H		;Count of received ping-reply's
+PURMCT:	DW	0000H		;Count of PDESTUNREACH MSGs
+PSQUCT:	DW	0000H		;Count of PSOURCEQUENCH MSGs
+PTIECT:	DW	0000H		;Count of PTIMEEXCEED MSGs
+PPMPCT:	DW	0000H		;Count of PPARAMPROBLEM MSGs
+PRUMCT:	DW	0000H		;Count of UNKNOWN MSGs/PEERs
+PCSECT:	DW	0000H		;Count of CHECKSUM ERROR
+PCTRE:	;lost
+PARECT:	DW	0000H		;Count of SEND ARP ERROR
+PTMOCT:	DW	0000H		;Count of TIME OUT ERROR
+P_LOGE:	;
+	;ICMP MSG Types
+P_CMX1:	DB	'DESTINATION UNREACHABLE MESSAGE PACKETS=','$'
+P_CMX2:	DB	'SOURCE QUENCH MESSAGE PACKETS=','$'
+P_CMX3:	DB	'TIME EXCEEDED MESSAGE PACKETS=','$'
+P_CMX4:	DB	'PARAMETER PROBLEM MESSAGE PACKETS=','$'
+	;ERRORS
+P_CMX5:	DB	'UNKNOWN MESSAGES=','$'
+P_CMX6:	DB	'CHECKSUM ERRORS=','$'
+P_CMX7:	DB	'SEND ARP ERRORS=','$'
+P_CMX8:	DB	'TIME OUT ERRORS=','$'
+	;
+	;Work-RAM
+PINGSK:	DB	0		;PING CLient Socket-Handle
+PSPEER:	DB	0,0,0,0		;PEER-IP	
+PSHSIZ:	DB	0,0		;Packet-Size Sender HOrder
+PSID:	DB	0,0		;Send-ID NOrder
+PSSQNM:	DB	0,0		;Send SQN HOrder
+PRPEER:	DB	0,0,0,0		;PEER-IP Receiver
+PRNSIZ:	DB	0,0		;Data-Size Receiver NOrder
+PRHSIZ:	DB	0,0		;Data-Size Receiver HOrder
+PHSQNM:	DB	0,0		;Received SQN HOrder
+PHCHKS:	DB	0,0		;Received CHKSUM HOrder
+SNDTIM:	DB	0,0		;N_Time SEND (ms)
+RECTIM:	DB	0,0		;N_Time REC. (ms)
+PRSTTM:	DB	0,0		;Average PING-Time
+P_TEMP:	DB	0,0,0,0		;Temp for ARG-PTR, IP
+	;ARG values
+P_INTV:	DW	1000		;Send interval in ms
+P_TMO:	DB	5		;Timeout in s
+PCOUNT:	DW	4		;Count of Requests
+P_BFSZ:	DW	P_MDSZ		;Send-Data Size
+P_TTL:	DB	128		;Time to live
+P_TOS:	DB	0		;Type of service
+P_PATT:	DS	16,0		;max. 16 patterns
+P_PATN:	DB	0		;number of patterns
+	;Buffer for Destination
+PDMNBF:	DS	255+1,0		;max. length
+	;
+PCSTAT:	DB	0		;Client-State
+	;Bit=1:	7 - PING REPLY received
+	;	6 - PING is running
+	;	5 - PING User Pattern
+	;	4 - Numeric ON*
+	;	3 - Audible ON*
+	;	2 - Quiet Output ON*
+	;	1 - Show Version ON*
+	;	0 - Show Help ON*
+	;   * only temporary active
+	;
+	;PING-State Messages
+P_CMXA:	DB	'PING ','$'
+P_CMXB:	DB	CR,LF,'PING TO ','$'
+P_CMXC:	DB	' WITH ','$'
+P_CMXD:	DB	' BYTES OF DATA.',CR,LF,LF,'$'
+P_CMXE:	DB	'REPLY FROM ','$'
+P_CMXF:	DB	' BYTES=','$'
+P_CMXG:	DB	' SQN=','$'
+P_CMXH:	DB	' CHECKSUM ERROR ','$'
+P_CMXI:	DB	' TIME=','$'
+P_CMXJ:	DB	' ms',CR,LF,'$'
+P_CMXK:	DB	CR,LF,'PING STATISTIC FOR ','$'
+P_CMXL:	DB	' PACKETS TRANSMITTED, ','$'
+P_CMXM:	DB	' RECEIVED, ','$'
+P_CMXN:	DB	' LOST','$'
+P_CMXO:	DB	'REQUEST TIMED OUT.',CR,LF,'$'
+P_CMXP:	DB	'SEND ARP ERROR.',CR,LF,'$'
+P_CMXQ:	DB	' UNKNOWN MESSAGE OR PEER.',CR,LF,'$'
+P_CMXR:	DB	' DESTINATION HOST UNREACHABLE.',CR,LF,'$'
+P_CMXS:	DB	' TIME EXCEEDED (TTL).',CR,LF,'$'
+P_CMXT:	DB	' PARAMETER PROBLEM.',CR,LF,'$'
+P_CMXU:	DB	' SOURCE QUENCH.',CR,LF,'$'
+P_CMXV:	DB	'destination is not allowed!',BEEP,CR,LF,'$'
+P_CMXW:	DB	'too many arguments!',BEEP,CR,LF,'$'
+P_CMXX:	DB	'=','$'
+	;
+P_CHLP:	DB	CLLN
+	DB	'PING [-ahnqv] [-c:count] [-i:interval] [-p:pattern] [-s:packet-',CR,LF
+	DB	'       size] [-t:ttl] [-u:tos] [-w:timeout] destination',CR,LF
+	DB	'Options:',CR,LF
+	DB	'-a            - audible ping',CR,LF
+	DB	'-h            - show help and exit',CR,LF
+	DB	'-n            - numeric output without inverse dns query',CR,LF
+	DB	'-q            - quiet output',CR,LF
+	DB	'-v            - show version and exit',CR,LF
+	DB	'-c:count      - stop after sending count ECHO_REQUEST packets',CR,LF
+	DB	'-i:interval   - wait interval ms between sending each packet',CR,LF
+	DB	'-p:pattern    - upto 16 bytes (hex) to fill out the packet data',CR,LF
+	DB	'-s:packetsize - specifies the number of data bytes to be sent',CR,LF
+	DB	'-t:ttl        - set the IP Time to Live',CR,LF
+	DB	'-u:tos        - set Quality of Service related bits',CR,LF
+	DB	'-w:timeout    - time to wait for a response in seconds',CR,LF
+	DB	' destination  - Host Name or IP Address',CR,LF
+	DB	'$'
+	;
+P_CVER:	DB	CR,LF
+	DB	'###    PING CLIENT CP/M 2+    ###',CR,LF
+	DB	'          Version ',P_MAJOR+'0','.',P_MINOR+'0',CR,LF
+	DB	'       "KCNet TCP/IP-Stack"',CR,LF
+	DB	' copyright 2008-2011 by >susowa<',CR,LF
+	DB	LF,'$'
+	;
+PINGC:	;check NETWORK
+	CALL	NETTST
+	JP	C,MLDWT
+	CALL	ONTEST
+	JP	C,MLDWT
+	XOR	A
+	LD	(PDMNBF),A	;reset destination
+	LD	A,(PCSTAT)
+	AND	20H		;reset state and remain User Pattern
+	LD	(PCSTAT),A
+	;get Options and Destination
+PINGC1:	LD	DE,P_CMXA
+	CALL	ZKOUT
+	LD	B,9		;max. 9 Parameter
+	CALL	INPUT
+	LD	DE,P_CMXW
+	JP	C,TXTOUT	;too many ARG's
+	LD	A,(ARGN)	;number of arguments
+	OR	A		
+	LD	HL,PCSTAT
+	JR	NZ,PINGC2
+	;no ARG's
+	LD	A,(HL)
+	XOR	1
+	LD	(HL),A
+	AND	1
+	LD	DE,P_CHLP
+	CALL	NZ,ZKOUT	;show Help and
+	JR	NZ,PINGC1	;repeat one time
+	RET
+PINGC2:	RES	0,(HL)		;Help OFF
+	LD	HL,PARG1	;address of first ARG-PTR
+	LD	(P_TEMP),HL
+	JR	PINGC4
+PINGC3:	LD	HL,ARGN
+	DEC	(HL)
+	JP	Z,P_OEND	;ARG's parsed
+PINGC4:	LD	HL,(P_TEMP)
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	INC	HL
+	LD	(P_TEMP),HL	;next ARG-PTR
+	EX	DE,HL		;HL: address ARG
+	LD	A,'-'
+	CP	(HL)
+	JP	NZ,P_O_DE	;destination found
+	INC	HL
+	LD	C,(HL)		;option char
+	INC	HL
+	LD	A,':'
+	CP	(HL)
+	JR	Z,PINGC6	;single option
+	;option string
+PINGC5:	XOR	A
+	OR	C		;string end?
+	JR	Z,PINGC3	;next option
+	EX	DE,HL
+	LD	HL,PCSTAT
+	AND	0DFH		;UCASE
+	CP	'A'		;audible
+	JR	NZ,P_OST1
+	SET	3,(HL)
+P_OST1:	CP	'H'		;help
+	JR	NZ,P_OST2
+	SET	0,(HL)
+P_OST2:	CP	'N'		;numeric
+	JR	NZ,P_OST3
+	SET	4,(HL)
+P_OST3:	CP	'Q'		;quiet
+	JR	NZ,P_OST4
+	SET	2,(HL)
+P_OST4:	CP	'V'		;version
+	JR	NZ,P_OST5
+	SET	1,(HL)
+P_OST5:	EX	DE,HL
+	LD	C,(HL)		;next char
+	INC	HL
+	JR	PINGC5
+PINGC6:	;single option
+	INC	HL		;address parameter
+	LD	A,C		;option char
+	AND	0DFH		;UCASE
+	CP	'C'
+	JR	Z,P_SOP1	;count
+	CP	'I'
+	JR	Z,P_SOP2	;interval
+	CP	'P'
+	JP	Z,P_SOP3	;pattern
+	CP	'U'
+	JP	Z,P_SOP4	;tos
+	CP	'S'
+	JP	Z,P_SOP5	;size packetdata
+	CP	'T'
+	JP	Z,P_SOP6	;ttl
+	CP	'W'
+	JP	Z,P_SOP7	;timeout
+	JR	PINGC3		;next option
+	;count of RQ's
+P_SOP1:	CALL	ATOI		;convert REQUESTS
+	JR	C,P_SO1E
+	LD	(PCOUNT),DE
+	JP	PINGC3		;next option
+P_SO1E:	LD	DE,P_SO1T
+	JP	TXTOUT
+P_SO1T:	DB	'invalid value for option c: 1-65535 / 0 for infinite (default 4)','$'
+	;interval
+P_SOP2:	CALL	ATOI		;convert TIME
+	JR	C,P_SO2E
+	LD	HL,30000
+	SBC	HL,DE
+	JR	C,P_SO2E	;>30.000
+	LD	(P_INTV),DE
+	JP	PINGC3		;next option
+P_SO2E:	LD	DE,P_SO2T
+	JP	TXTOUT
+P_SO2T:	DB	'invalid value for option i: 0-30.000ms (default 1.000ms)','$'
+	;pattern
+P_SOP3:	LD	B,32		;max. 32 characters
+	LD	DE,P_PATT	;pattern PTR
+P_SO3R:	LD	A,(HL)
+	INC	HL
+	CALL	ISHEX##
+	JR	NZ,P_SO3B	;<>hex -> break
+	CALL	CATH##		;ascii hex -> bin
+	BIT	0,B
+	JR	NZ,P_SO3L
+	;Bit 7-4
+	RLCA
+	RLCA
+	RLCA
+	RLCA
+	LD	(DE),A		;clear pattern byte and save char pattern
+	JR	P_SO3C
+P_SO3L:	;Bit 3-0
+	LD	C,A
+	LD	A,(DE)
+	OR	C
+	LD	(DE),A		;save char pattern
+	INC	DE		;next pattern byte
+P_SO3C:	DJNZ	P_SO3R		;repeat
+	LD	A,(HL)
+	CALL	ISHEX##
+	JR	Z,P_SO3E	;too many char's
+P_SO3B:	LD	A,32
+	SUB	B
+	SRL	A		;/2
+	LD	(P_PATN),A	;save number of full Bytes!
+	LD	HL,PCSTAT
+	SET	5,(HL)		;User Pattern ON
+	OR	A		;number>0?
+	JR	NZ,P_SO3J	;OK
+	RES	5,(HL)		;User Pattern OFF
+P_SO3J:	JP	PINGC3		;next option
+P_SO3E:	LD	DE,P_SO3T
+	JP	TXTOUT
+P_SO3T:	DB	'invalid value for option p: 16 HEX-Bytes allowed (0 for a-z)','$'
+	;tos
+P_SOP4:	CALL	ATOI		;convert TOS
+	JR	C,P_SO4E
+	INC	D
+	DEC	D
+	JR	NZ,P_SO4E
+	LD	(P_TOS),A
+	JP	PINGC3		;next option
+P_SO4E:	LD	DE,P_SO4T
+	JP	TXTOUT
+P_SO4T:	DB	'invalid value for option u: 0-255 (default 0)','$'
+	;size packetdata
+P_SOP5:	CALL	ATOI		;convert SIZE
+	JR	C,P_SO5E
+	LD	HL,MAXMTU-P_MHDL-RH_IPR ;subtract ICMP-Header and IP-Receiver-Headerlength
+	SBC	HL,DE
+	JR	C,P_SO5E	;too big (>1466)
+	LD	(P_BFSZ),DE
+	JP	PINGC3		;next option
+P_SO5E:	LD	DE,P_SO5T
+	JP	TXTOUT
+P_SO5T:	DB	'invalid value for option s: 0-1466 (default 56 Byte)','$'
+	;ttl
+P_SOP6:	CALL	ATOI		;convert TTL
+	JR	C,P_SO6E
+	INC	D
+	DEC	D
+	JR	NZ,P_SO6E
+	LD	(P_TTL),A
+	JP	PINGC3		;next option
+P_SO6E:	LD	DE,P_SO6T
+	JP	TXTOUT
+P_SO6T:	DB	'invalid value for option t: 0-255 (default 128)','$'
+	;timeout
+P_SOP7:	CALL	ATOI		;convert TIME
+	JR	C,P_SO7E
+	INC	D
+	DEC	D
+	JR	NZ,P_SO7E
+	OR	A
+	JR	Z,P_SO7E	;=0
+	CP	31
+	JR	NC,P_SO7E	;>30
+	LD	(P_TMO),A
+	JP	PINGC3		;next option
+P_SO7E:	LD	DE,P_SO7T
+	JP	TXTOUT
+P_SO7T:	DB	'invalid value for option w: 1-30s (default 5s)','$'
+;---------------------------------
+P_O_DE:	;destination found: HL=PTR
+	LD	B,255		;max. length of Name 
+	LD	DE,PDMNBF
+	XOR	A
+P_O_DC:	PUSH	BC
+	LDI			;copy
+	POP	BC
+	CP	(HL)
+	JR	Z,P_O_DD	;destination string end
+	DJNZ	P_O_DC
+P_O_DD:	LD	(DE),A		;write 0-Byte
+P_OEND:	;options parsed
+	LD	HL,PCSTAT
+	BIT	0,(HL)
+	LD	DE,P_CHLP
+	JP	NZ,TXTOUT	;show Help, wait and exit
+	BIT	1,(HL)
+	LD	DE,P_CVER
+	JP	NZ,TXTOUT	;show Version, wait and exit
+	LD	DE,PDMNBF
+	LD	A,(DE)
+	OR	A
+	JR	NZ,P_MKP1	;new destination found
+	LD	DE,P_NODE
+	JP	TXTOUT		;no destination found
+P_NODE:	DB	'no destination found.',BEEP,'$'
+P_MKP1:	;resolve/make PSPEER from new destination string (DE)
+	LD	HL,P_TEMP
+	LD	A,(DE)
+	CP	'0'
+	JR	C,P_MKP5	;<0 no Digit
+	CP	'9'+1
+	JR	NC,P_MKP5	;>9 no Digit
+	;try to convert num. IP from digit(s)
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	JR	C,P_MKP5	;Err->try Name
+	;resolve IP in P_TEMP
+	LD	A,(PCSTAT)
+	BIT	4,A
+	JR	NZ,P_MKP9	;numeric ON: no iquery
+	PUSH	HL
+	;copy IP to DMNBUF (preserves IP in P_TEMP for copy to PSPEER)
+	LD	DE,DMNBUF
+	PUSH	DE
+	LD	BC,4
+	LDIR
+	;resolve IP in DMNBUF
+	POP	DE
+	LD	HL,LINEBF
+	CALL	GHBADR		;iquery:(DE)IP->(DE)Name
+	POP	HL
+	JR	C,P_MKP9	;if ERR copy new IP to PSPEER only
+	;copy Name to PDMNBF for PING-Output (overwrites IP-String!)
+	PUSH	HL
+	EX	DE,HL
+	XOR	A
+	LD	DE,PDMNBF
+P_MKP4:	LDI			;Name
+	CP	(HL)
+	JR	NZ,P_MKP4
+	LDI			;0-Byte
+	POP	HL
+	JR	P_MKP9		;and now copy new IP
+P_MKP5:	;copy Name to DMNBUF (preserves NAME in PDMNBF for PING-Output)
+	EX	DE,HL
+	XOR	A
+	LD	DE,DMNBUF
+P_MKP6:	LDI			;Name
+	CP	(HL)
+	JR	NZ,P_MKP6
+	LDI			;0-Byte
+	;resolve NAME in DMNBUF
+	LD	DE,DMNBUF
+	LD	HL,LINEBF
+	CALL	GHBNAM		;query:(DE)Name->(DE)IP
+	EX	DE,HL		;(HL)IP
+	JR	NC,P_MKP9
+	;A=ERR# from resolver
+	CP	3
+	JR	Z,P_MKP8	;SRV ERR 3
+	LD	DE,DNSQSE	;'Server'
+	CP	16
+	JR	C,P_MKP7
+	LD	DE,DNSQCE	;'Client'
+P_MKP7:	CALL	ZKOUT		;-ERR Out
+	CALL	PAFDC##		;ERR-number
+	CALL	NEWLN
+	JP	MLDWT		;wait and exit
+P_MKP8:	LD	DE,DNSSE3
+	CALL	ZKOUT		;'unknown host '
+	LD	DE,PDMNBF
+	CALL	ZKOUT		;Name Out
+	CALL	NEWLN
+	JP	MLDWT		;wait and exit
+P_MKP9:	LD	DE,PSPEER
+	LD	BC,4
+	LDIR			;copy only valid IP's !
+	;INIT
+	CALL	PSCKOP		;open Socket
+	LD	DE,TCPMXD	;socket-error
+	JP	C,TXTOUT
+	LD	HL,PSID
+	CALL	MZ4ID		;make Random-ID
+	CALL	PSPING		;start
+	JR	C,PINGRE	;ERR->break
+	;PING-Client LOOP
+PINGLP:	LD	HL,PCSTAT
+	BIT	6,(HL)
+	JR	Z,PINGRE	;off=ready
+	CALL	CST##		;CON ?
+	JR	NZ,PINGMP	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	CP	ETX
+	JR	Z,PINGSE	;STAT & close
+	CP	ESC
+	JR	Z,PINGSE	;STAT & close
+	CP	CR
+	CALL	Z,D_PING	;display STAT
+PINGMP:	;check Sender
+	CALL	P_PING		;PING SERVICE
+	;check Receiver
+	LD	A,(PINGSK)
+	LD	E,SL_RECV
+	CALL	SELECT		;check RecSize
+	CALL	NC,R_PING	;Data -> RECEIVE
+	;check Socket
+	LD	A,(PINGSK)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	INC	E
+	DEC	E		;offline ?
+	JR	NZ,PINGLP	;loop
+	LD	HL,PCSTAT
+	BIT	6,(HL)
+	JR	Z,PINGRO	;PING is not running
+	LD	HL,(PARECT)	;ARP-Err Counter
+	INC	HL		;+1
+	LD	(PARECT),HL
+PINGRO:	CALL	PSCKRO		;reopen
+	JR	C,PINGRE	;Err -> End
+	JR	PINGLP		;loop
+	;STOP with STAT
+PINGSE:	CALL	PSPING		;STOP and STAT
+	;close & end
+PINGRE:	LD	A,(PINGSK)
+	CALL	CLOSE		;release Socket
+	JP	MLDWT
+	
+;### Sub-programs ###
+P_PING:	;PING SERVICE
+	LD	A,(PCSTAT)
+	BIT	6,A
+	RET	Z		;PING is not running
+	LD	DE,(SNDTIM)
+	CALL	CALCPT		;calculate Time-Diff. (HL)
+	BIT	7,A
+	JR	Z,P_PIN2	;no REPLY
+	LD	DE,(P_INTV)
+	SBC	HL,DE
+	RET	C		;wait min. (P_INTV)
+	JR	P_PIN3		;quit & next Request
+P_PIN2:	PUSH	HL
+	LD	DE,(P_TMO)	;s!
+	LD	D,0
+	LD	HL,1000		;ms!
+	CALL	MULHD##		;PO: CY=0!
+	POP	DE
+	SBC	HL,DE
+	RET	NC		;wait for Timeout
+	LD	DE,P_CMXO	;Timeout
+	CALL	ZKOUT
+	LD	HL,(PTMOCT)	;Counter
+	INC	HL		;+1
+	LD	(PTMOCT),HL
+P_PIN3:	LD	HL,PCSTAT
+	RES	7,(HL)		;always quit!
+	JP	PSPIN1		;next Request
+	;
+PSPING:	;PING START/STOP
+	LD	A,(PCSTAT)
+	XOR	40H
+	RES	7,A		;received OFF
+	LD	(PCSTAT),A
+	BIT	6,A
+	JP	Z,D_PING	;STOP -> DISPLAY STAT.
+	;START
+	LD	HL,PSPEER
+	CALL	IPCHCK
+	JR	NC,PSPIN0	;OK
+	LD	DE,P_CMXV	;IP not valid
+	CALL	ZKOUT
+	LD	HL,PCSTAT
+	RES	6,(HL)		;STOP PING
+	RET			;CY=1 -> ERR
+PSPIN0:	LD	HL,P_LOGA
+	LD	BC,P_LOGE-P_LOGA
+	CALL	CLRMEM		;clear STAT
+	;'PING TO name=xxx.xxx.xxx.xxx WITH xxxx(xxxx) BYTES OF DATA.'
+	LD	DE,P_CMXB
+	CALL	ZKOUT
+	LD	DE,PDMNBF
+	LD	A,(DE)
+	CP	'0'
+	JR	C,PSPINO	;<0 no Digit
+	CP	'9'+1
+	CCF			;>9 no Digit
+PSPINO:	CALL	C,ZKOUT		;Name Out
+	LD	DE,P_CMXX
+	CALL	C,ZKOUT		;'=' Out
+	LD	HL,PSPEER
+	CALL	IPOUT		;always IP Out 
+	LD	DE,P_CMXC
+	CALL	ZKOUT
+	LD	HL,(P_BFSZ)
+	CALL	PHLFDC##	;DataSize
+	LD	A,'('
+	CALL	COUT##
+	LD	DE,P_MHDL
+	ADD	HL,DE		;+ Headerlength
+	CALL	PHLFDC##	;= IP-Packet-Size
+	LD	A,')'
+	CALL	COUT##
+	LD	DE,P_CMXD
+	CALL	ZKOUT
+	LD	HL,(PSID)
+	INC	HL		;ID+
+	LD	(PSID),HL	;1. Request
+	LD	HL,0
+	LD	(PSSQNM),HL	;reset SQN
+PSPIN1:	;RQ = max.?
+	LD	HL,(PCOUNT)
+	LD	A,H
+	OR	L		;CY=0!
+	JR	Z,PSPIN2	;infinite
+	LD	DE,(PSRQCT)	;SRQ Counter
+	SBC	HL,DE
+	JR	Z,PSPIN3	;=max. -> stop
+PSPIN2:	LD	HL,(PSSQNM)
+	INC	HL		;SQN+
+	LD	(PSSQNM),HL
+	CALL	P_MAKE		;make MSG
+	LD	HL,LINEBF	;Data
+	LD	DE,PSPEER	;Peer Data
+	LD	BC,(PSHSIZ)	;PacketSize
+	LD	A,(PINGSK)	;Socket
+	CALL	SENDTO
+	CALL	N_TIME
+	LD	(SNDTIM),HL	;save Time SEND
+	JR	NC,PSPIN4	;Send OK
+	;ARP-ERR
+	LD	DE,P_CMXP
+	CALL	ZKOUT
+	LD	HL,(PARECT)	;Counter
+	INC	HL		;+1
+	LD	(PARECT),HL
+	;close & reopen socket
+	CALL	PSCKRO		;reopen
+PSPIN3:	LD	HL,PCSTAT
+	RES	6,(HL)		;PING stop
+	JR	D_PING		;->STAT
+PSPIN4:	LD	HL,(PSRQCT)	;RQ Counter
+	INC	HL		;+1
+	LD	(PSRQCT),HL
+	XOR	A		;clear Keycode
+	RET
+D_PING:	;display PING-STATISTIC
+	LD	DE,P_CMXK
+	CALL	ZKOUT
+	LD	HL,PSPEER
+	CALL	IPOUT
+	LD	A,':'
+	CALL	COUT##
+	CALL	NEWLN
+	LD	HL,(PSRQCT)
+	CALL	PHLFDC##
+	LD	DE,P_CMXL	;transmitted
+	CALL	ZKOUT
+	LD	HL,PRRPCT
+	LD	B,LOW((PCTRE-PRRPCT)/2)
+	XOR	A
+	LD	E,A
+	LD	D,A		;SUM&CY=0
+D_PIN1:	LD	A,E
+	ADC	A,(HL)
+	LD	E,A
+	INC	HL
+	LD	A,D
+	ADC	A,(HL)
+	LD	D,A
+	INC	HL
+	DJNZ	D_PIN1
+	EX	DE,HL
+	LD	C,L
+	LD	B,H
+	CALL	PHLFDC##
+	LD	DE,P_CMXM	;received
+	CALL	ZKOUT
+	LD	HL,(PARECT)
+	LD	DE,(PTMOCT)
+	ADD	HL,DE
+	CALL	PHLFDC##
+	LD	DE,P_CMXN	;lost
+	CALL	ZKOUT
+	LD	A,C
+	OR	B
+	CALL	Z,NEWLN
+	JR	Z,D_PIN2	;no Reply's
+	LD	A,','
+	CALL	COUT##
+	LD	DE,P_CMXI
+	CALL	ZKOUT
+	LD	HL,(PRSTTM)	;STAT-Time
+	CALL	PHLFDC##
+	LD	DE,P_CMXJ
+	CALL	ZKOUT
+D_PIN2:	LD	B,LOW((P_LOGE-PURMCT)/2)
+	LD	HL,PURMCT
+	LD	DE,P_CMX1
+D_PIN3:	PUSH	BC
+	CALL	D_PIUP		;DEST.UNREACH MSG ...
+	POP	BC
+	DJNZ	D_PIN3		;...TIME OUT ERROR
+	CALL	NEWLN
+	XOR	A		;clear Keycode
+	RET	
+D_PIUP:	LD	C,(HL)
+	INC	HL
+	LD	B,(HL)
+	INC	HL
+	LD	A,C
+	OR	B
+	JR	Z,D_PIU1
+	PUSH	HL
+	PUSH	DE
+	CALL	ZKOUT
+	LD	L,C
+	LD	H,B
+	CALL	PHLFDC##
+	CALL	NEWLN
+	POP	DE
+	POP	HL
+D_PIU1:	LD	A,(DE)
+	INC	DE
+	CP	'$'
+	JR	NZ,D_PIU1
+	RET
+R_PING:	;IP-Socket RECEIVE
+	CALL	N_TIME
+	LD	(RECTIM),HL	;save RECEIVE TIME 
+	LD	A,(PINGSK)
+	LD	HL,LINEBF	;for Data
+	LD	DE,PRPEER	;for HeaderData
+	LD	BC,MAXMTU-RH_IPR ;IP-PacketSize - IP-Header
+	CALL	RECVFR		;Receive
+	RET	C		;no Data
+	LD	(HL),0		;for Checksum, if PacketSize is odd
+	LD	HL,LINEBF	;Data
+	LD	DE,0		;Checksum=0
+	CALL	CHKSUM		;BC: RecSize
+	LD	HL,PHCHKS	;Checksum of Received-Packet in HOrder!
+	LD	DE,P_CHKS
+	CALL	NTOHS
+	LD	HL,PRHSIZ
+	LD	DE,PRNSIZ
+	CALL	NTOHS
+	LD	HL,PHSQNM
+	LD	DE,P_SQNM
+	CALL	NTOHS
+	LD	A,(P_TYPE)
+	CP	PECHOREQUEST
+	JR	NZ,R_PI00
+	;if Request -> Reply Packet
+	LD	HL,(PHCHKS)	;CHECKSUM
+	LD	A,H
+	OR	L
+	RET	NZ		;Err: ignore Packet
+	LD	A,0FFH		;any
+	LD	D,SK_IPLRAW
+	LD	E,PT_ICMP	;IP-Protocol
+	CALL	SOCKET
+	RET	C		;no free Sockets 
+	CALL	CONNECT
+	JR	C,R_RPLE	;Socket ERR 
+	LD	HL,P_TYPE
+	LD	(HL),PECHOREPLY
+	LD	HL,LINEBF	;Data
+	LD	BC,(PRHSIZ)	;Size HOrder!
+	PUSH	HL
+	PUSH	BC
+	PUSH	AF
+	CALL	CHKSMS		;make new CHECKSUM for Echo Packet
+	POP	AF
+	POP	BC
+	POP	HL
+	LD	DE,PRPEER	;Peer IP
+	CALL	SENDTO		;Echo Packet
+R_RPLE:	CALL	CLOSE
+	RET
+R_PI00:	;no Request Packet
+	LD	A,(PCSTAT)
+	BIT	6,A
+	RET	Z		;PING is not running
+	LD	DE,P_CMXE
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	LD	HL,PRPEER
+	CALL	Z,IPOUT	
+	LD	A,':'
+	CALL	Z,COUT##
+	;test CHECKSUM
+	LD	HL,(PHCHKS)
+	LD	A,H
+	OR	L
+	JR	Z,R_PI01	;=0 -> OK
+	LD	HL,(PCSECT)
+	INC	HL
+	LD	(PCSECT),HL
+	LD	DE,P_CMXH
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	;test IP's
+	LD	HL,PSPEER	;Send IP
+	LD	DE,PRPEER	;Recv IP
+	CALL	CMP4BT
+	JP	Z,R_PIN0	;OK (only Time Out)
+	;<> IP's -> ignore Packet
+	LD	A,(PCSTAT)	
+	BIT	2,A		;quiet ON?
+	CALL	Z,NEWLN		;no
+	RET
+R_PI01:	LD	A,(P_TYPE)
+	CP	PECHOREPLY
+	JR	NZ,R_PI02
+	;ECHO Reply
+	LD	HL,PSPEER	;Send IP
+	LD	DE,PRPEER	;Recv IP
+	CALL	CMP4BT
+	JR	NZ,R_PI0E
+	LD	HL,PSSQNM	;Send SQN
+	LD	DE,PHSQNM	;Recv SQN
+	CALL	CMP2BT
+	JR	NZ,R_PI0E
+	LD	HL,PSID		;Send ID
+	LD	DE,P_ID		;Recv ID
+	CALL	CMP2BT
+	JR	Z,R_PI06	;OK & Data Out
+	;unknown MSG or PEER
+R_PI0E:	LD	HL,(PRUMCT)
+	INC	HL
+	LD	(PRUMCT),HL
+	LD	DE,P_CMXQ
+	;quiet Test OUT
+QTZOUT:	LD	A,(PCSTAT)	
+	BIT	2,A		;quiet ON?
+	CALL	Z,ZKOUT		;no
+	RET
+	;check other MSG Types
+R_PI02:	CP	PDESTUNREACH
+	JR	NZ,R_PI03
+	LD	HL,PURMCT
+	LD	DE,P_CMXR
+	JR	R_PIEJ
+R_PI03:	CP	PSOURCEQUENCH
+	JR	NZ,R_PI04
+	LD	HL,PSQUCT
+	LD	DE,P_CMXU
+	JR	R_PIEJ
+R_PI04:	CP	PTIMEEXCEED
+	JR	NZ,R_PI05
+	LD	HL,PTIECT
+	LD	DE,P_CMXS
+	JR	R_PIEJ
+R_PI05:	CP	PPARAMPROBLEM
+	JR	NZ,R_PI0E	;unknown
+	LD	HL,PPMPCT
+	LD	DE,P_CMXT
+R_PIEJ:	LD	C,(HL)
+	INC	HL
+	LD	B,(HL)
+	INC	BC
+	LD	(HL),B
+	DEC	HL
+	LD	(HL),C
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	JR	R_PIN6
+R_PI06:	;SIZE/SQN/Time Out
+	;Counter +
+	LD	DE,P_CMXF
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	LD	HL,(PRHSIZ)
+	CALL	Z,PHLFDC##
+	LD	DE,P_CMXG
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	LD	HL,(PHSQNM)
+	CALL	Z,PHLFDC##
+R_PIN0:	LD	DE,P_CMXI
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	PUSH	AF
+	LD	HL,(RECTIM)
+	LD	DE,(SNDTIM)
+	CALL	CALCPU		;HL=REC-SEND
+	POP	AF
+	CALL	Z,PHLFDC##
+	LD	DE,P_CMXJ
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	LD	BC,(PRRPCT)	;Counter ...
+	LD	A,B
+	OR	C
+	JR	Z,R_PIN5	;first Packet
+	LD	DE,(PRSTTM)
+	ADD	HL,DE
+	SRL	H
+	RR	L		;average
+R_PIN5:	LD	(PRSTTM),HL
+	INC	BC		;... +1
+	LD	(PRRPCT),BC
+R_PIN6:	LD	HL,PCSTAT
+	BIT	3,(HL)
+	LD	A,BEEP
+	CALL	NZ,COUT##	;audible ON
+	;PING Reply received = ON
+	SET	7,(HL)
+	XOR	A
+	RET
+	;close & reopen socket
+PSCKRO:	LD	A,(PINGSK)
+	CALL	CLOSE
+PSCKOP:	LD	A,0FFH		;beliebig
+	LD	D,SK_IPLRAW	;IP-Layer RAW
+	LD	E,PT_ICMP	;IP-Protokoll
+	CALL	SOCKET
+	RET	C		;ERR
+	LD	(PINGSK),A
+	LD	DE,(P_TOS)
+	CALL	N_SSTOS		;set TOS
+	LD	DE,(P_TTL)
+	CALL	N_SSTTL		;set TTL
+	CALL	CONNECT		;now open
+	RET
+	;check forbidden PEER-IP's
+	;- 000-IP
+	;- limited Broadcast
+	;- directed Broadcast
+	;- Net-Address
+	;PI: HL - IP
+IPCHCK:	PUSH	HL
+	XOR	A
+	CALL	CPA4BT
+	POP	HL
+	SCF			;000-IP
+	RET	Z
+	PUSH	HL
+	LD	A,0FFH
+	CALL	CPA4BT
+	POP	HL
+	SCF			;limited BC
+	RET	Z
+	PUSH	HL
+	LD	DE,P_TEMP
+	LD	BC,SRCMSK
+	CALL	ORMASK
+	EX	DE,HL
+	DEC	A		;=FF
+	CALL	CPA4BT
+	POP	HL
+	SCF			;directed BC
+	RET	Z
+	LD	DE,P_TEMP
+	LD	BC,SRCMSK
+	CALL	ANDMSK
+	CALL	CMP4BT
+	SCF			;Net-Address
+	RET	Z
+	CCF			;OK
+	RET	
+ORMASK:	LD	A,4
+	PUSH	HL
+	PUSH	DE
+ORMAS1:	PUSH	AF
+	LD	A,(BC)
+	OR	(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	INC	BC
+	POP	AF
+	DEC	A
+	JR	NZ,ORMAS1
+	POP	DE
+	POP	HL
+	RET
+ANDMSK:	LD	A,4
+	PUSH	HL
+	PUSH	DE
+ANDMS1:	PUSH	AF
+	LD	A,(BC)
+	AND	(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	INC	BC
+	POP	AF
+	DEC	A
+	JR	NZ,ANDMS1
+	POP	DE
+	POP	HL
+	RET
+	;Make PING-REQUEST Packet in LINEBF
+P_MAKE:	LD	A,PECHOREQUEST
+	LD	(P_TYPE),A
+	XOR	A
+	LD	(P_CODE),A
+	LD	HL,(PSID)
+	LD	(P_ID),HL
+	LD	HL,PSSQNM
+	LD	DE,P_SQNM
+	CALL	HTONS
+	LD	HL,P_DATA
+	LD	BC,(P_BFSZ)
+	LD	A,B
+	OR	C
+	JR	Z,P_MNOD	;no Data
+	LD	A,(PCSTAT)
+	BIT	5,A
+	JR	NZ,P_MAK6
+	;User pattern OFF
+	LD	D,'a'
+	LD	E,'z'+1
+P_MAK1:	LD	(HL),D		;fill with a-z...
+	INC	HL
+	INC	D
+	LD	A,D
+	CP	E
+	JR	NZ,P_MAK2
+	LD	D,'a'
+P_MAK2:	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,P_MAK1
+	JR	P_MNOD
+P_MAK6:	;User pattern ON
+	LD	A,(P_PATN)
+	EX	AF,AF'
+	LD	DE,P_PATT
+P_MAK7:	LD	A,(DE)
+	LD	(HL),A
+	INC	HL
+	INC	DE
+	EX	AF,AF'
+	DEC	A
+	JR	NZ,P_MAK8
+	LD	A,(P_PATN)	;reset pattern
+	LD	DE,P_PATT
+P_MAK8:	EX	AF,AF'	
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,P_MAK7
+P_MNOD:	LD	(HL),0		;for Checksum, if PacketSize is odd
+	LD	DE,P_MSG	;first ADR MSG
+	SBC	HL,DE		;last-first
+	LD	B,H
+	LD	C,L		;Packet length
+	LD	(PSHSIZ),HL
+	EX	DE,HL		;HL: first ADR
+CHKSMS:	LD	DE,0		;Checksum
+	LD	(P_CHKS),DE	;clear Checksum !!!
+	;calculate & write Checksum ICMP
+CHKSUM:	SRL	B
+	RR	C		;Bytes -> Words
+	JR	NC,CHKSBG
+	INC	BC		;if odd: Words + 1
+CHKSBG:	OR	A		;CY=0
+P_MAK3:	LD	A,E
+	ADC	A,(HL)
+	LD	E,A
+	INC	HL
+	LD	A,D
+	ADC	A,(HL)
+	LD	D,A
+	INC	HL
+	PUSH	AF		;save CY
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	Z,P_MAK4	;ready ?
+	POP	AF		;load CY
+	JR	P_MAK3
+P_MAK4:	POP	AF
+	JR	NC,P_MAK5	;last CY !
+	INC	E
+	JR	NZ,P_MAK5
+	INC	D
+P_MAK5:	LD	HL,P_CHKS	;IP-Checksum of MSG
+	LD	A,E
+	CPL			;1'CPL
+	LD	(HL),A		;save Nhigh
+	INC	HL
+	LD	A,D
+	CPL			;1'CPL
+	LD	(HL),A		;save Nlow
+	RET
+
+;---------------------------------------
+	
+	; Command 'DNS CLIENT'
+
+DNSQTX:	DB	'Name or IP-Address: ','$'
+DNSQTL:	DB	'            Result: ','$'
+	;
+DNSQU:	;check NETWORK
+	CALL	NETTST
+	JP	C,MLDWT
+	CALL	ONTEST
+	JP	C,MLDWT
+	LD	DE,DNSQTX
+	CALL	ZKOUT
+	CALL	INPEER		;DE: PEER String in DNB / HL: LINEBF
+	RET	C		;ERR
+	PUSH	DE
+	CALL	NEWLN
+	LD	DE,DNSQTL
+	CALL	ZKOUT
+	POP	DE
+	LD	A,(DE)
+	CP	'0'
+	JR	C,DNSQU3	;<0 no Digit
+	CP	'9'+1
+	JR	NC,DNSQU3	;>9 no Digit
+	;try numeric IP
+	CALL	I_ADDR		;(DE)IP-String->(HL)numeric IP
+	JR	C,DNSQU3	;Err->try Name
+	;resolve numeric IP->Name
+	EX	DE,HL
+	CALL	GHBADR		;iquery:(DE)numeric IP->(DE)Name
+	JR	C,DNSQU5	;ERR
+	JR	DNSQU4		;OK
+DNSQU3:	;resolve Name->numeric IP
+	CALL	GHBNAM		;query:(DE)Name->(DE)numeric IP
+	JR	C,DNSQU5	;ERR
+	EX	DE,HL
+	CALL	I_NTOA		;(HL)numeric IP->(DE)IP-String
+DNSQU4:	;query result Out
+	CALL	ZKOUT
+	JR	DNSQU7
+DNSQU5:	;ERR Out
+	LD	DE,DNSQSE	;Server ERR
+	CP	16
+	JR	C,DNSQU6
+	LD	DE,DNSQCE	;Client ERR
+DNSQU6:	CALL	ZKOUT
+	CALL	PAFDC##		;ERR#
+DNSQU7:	JP	MLDWT
+	
+;---------------------------------------
+
+	;Messages TCP/UDP/ICMP/MAC
+TCPMX1:	DB	'TCP SERVER READY (PORT: ','$'
+TCPMX2:	DB	'CLIENT CONNECTED ( >TAB<-SEND / >E<-ECHO / >ESC<-BRK )',CR,LF,'$'
+TCPMX3:	DB	'TEXT: ','$'
+TCPMX4:	DB	'RECEIVED: ','$'
+TCPMX5:	DB	'TCP SOCKET CLOSED',CR,LF,'$'
+TCPMX6:	DB	'CLIENT DISCONNECTED',CR,LF,'$'
+TCPMX7:	DB	'TIMEOUT ERROR',CR,LF,'$'
+TCPMX8:	DB	'CONNECT TO: ','$'
+TCPMX9:	DB	'CONNECTED TO TCP SERVER ( >TAB<-SEND / >E<-ECHO / >ESC<-BRK )',CR,LF,'$'
+TCPMXA:	DB	'TCP SERVER CANCELED CONNECTION',CR,LF,'$'
+TCPMXB:	DB	'UDP SOCKET READY ... ( >TAB<-SEND / >E<-ECHO / >ESC<-BRK )',CR,LF,'$'
+TCPMXC:	DB	'UDP SOCKET CLOSED',CR,LF,'$'
+TCPMXD:	DB	'SOCKET ERROR',CR,LF,'$'
+TCPMXE:	DB	'OK',CR,LF,'$'
+TCPMXF:	DB	'RECEIVED FROM: ','$'
+TCPMXG:	DB	'ICMP SOCKET READY ... LISTEN ( >ESC<-BRK )',CR,LF,'$'
+TCPMXH:	DB	'ICMP SOCKET CLOSED',CR,LF,'$'
+TCPMXI:	DB	'MAC SOCKET READY ... LISTEN ( >ESC<-BRK )',CR,LF,'$'
+TCPMXJ:	DB	'MAC SOCKET CLOSED',CR,LF,'$'
+TCPMXK:	DB	'ICMP-MESSAGE ','$'
+TCPMXL:	DB	'MAC-MESSAGE ','$'
+TCPMXM:	DB	' BYTE(S) ','$'
+TCPMXN:	DB	'DESTINATION MAC: ','$'
+TCPMXO:	DB	'     SOURCE MAC: ','$'
+TCPMXP:	DB	'    PACKET TYPE: ','$'
+TCPMXQ:	DB	'TYPE: ','$'
+TCPMXR:	DB	'  CODE: ','$'
+TCPMXS:	DB	'IP','$'
+TCPMXT:	DB	'ARP','$'
+TCPMXU:	DB	'): WAITING FOR CLIENT ... BRK WITH >ESC<',CR,LF,'$'
+TCPMXV:	DB	'ECHO MODE ','$'
+TCPMXW:	DB	'ON',CR,LF,'$'
+TCPMXX:	DB	'OFF',CR,LF,'$'
+TCPMXY:	DB	'SEND TO: ','$'
+TCPMXZ:	DB	'SEND TEXT ... ','$'
+TCPMTE:	DB	CLLN,'ECHO (Byte): ','$'
+DNSQSE:	DB	'DNS SERVER ERROR ','$'
+DNSQCE:	DB	'DNS CLIENT ERROR ','$'
+DNSSE3:	DB	'UNKNOWN HOST ','$'
+
+;---------------------------------------
+
+	; Command 'TCP SERVER SOCKET'
+
+TCPSRV:	;check NETWORK
+	CALL	NETTST
+	JP	C,MLDWT
+	CALL	ONTEST
+	JP	C,MLDWT
+	;INIT
+	LD	A,0FFH		;any
+	LD	D,SK_STREAM	;Mode
+	LD	E,SO_NDACK	;Flags
+	CALL	SOCKET
+	LD	DE,TCPMXD	;socket-error
+	JP	C,TCPSSE
+	LD	(SOCKNM),A
+	LD	HL,SSPORT	;Source Port
+	CALL	BIND
+	JR	C,TCPSSP	;close
+	CALL	LISTEN
+	JR	C,TCPSSP	;close
+	;waiting for clients
+	LD	DE,TCPMX1
+	CALL	ZKOUT
+	LD	HL,SSPORT
+	LD	E,(HL)
+	INC	HL
+	LD	L,(HL)
+	LD	H,E		;NOrder->Horder
+	CALL	PHLFDC##	;PORT Out	
+	LD	DE,TCPMXU
+	CALL	ZKOUT
+TCPSWT:	LD	A,(SOCKNM)
+	LD	HL,PEERIP	;storage Peer-IP
+	CALL	ACCEPT		;Client ?
+	JR	NC,TCPSCN	;->connected
+	CALL	CONDIN##
+	JR	Z,TCPSWT	;no Input
+	;check break
+	CP	ETX
+	JR	Z,TCPSSP	;->stop server
+	CP	ESC
+	JR	Z,TCPSSP	;->stop server
+	JR	TCPSWT
+TCPSCN:	;connected
+	LD	DE,TCPMX2
+	CALL	ZKOUT
+	CALL	PDTOUT		;Peer Data Out
+	CALL	NEWLN
+	;server loop
+TCPSCL:	CALL	CST##		;CON ?
+	JR	NZ,TCPSNI	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	;check break
+	CP	ETX
+	JR	Z,TCPSBE
+	CP	ESC
+	JR	NZ,TCPSCI
+	;close socket & break
+TCPSBE:	LD	A,(SOCKNM)
+	CALL	SHUTDN
+	CALL	NEWLN
+	LD	DE,TCPMX6	;disconnected
+	CALL	ZKOUT
+TCPSSP:	LD	A,(SOCKNM)
+	CALL	CLOSE
+	LD	DE,TCPMX5	;offline
+TCPSSE:	CALL	ZKOUT
+	XOR	A
+	LD	(SECHO),A	;ECHO off
+	JP	MLDWT
+TCPSCI:	AND	0DFH		;UCASE
+	CP	'E'
+	CALL	Z,SWECHO
+	;check send request
+	CP	TAB
+	CALL	Z,SEDATA	;input & send DATA
+TCPSNI:	;check receiver
+	CALL	REDATA		;receive DATA
+	;check socket State
+	LD	A,(SOCKNM)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	LD	HL,TCPMX6	;'disconnected'
+	LD	A,S_CLSWAIT
+	CP	E
+	JR	Z,TCPSRT	;client canceled
+	LD	HL,TCPMX7	;'timeout'
+	LD	A,S_CLOSED
+	CP	E
+	JR	NZ,TCPSCL	;loop
+TCPSRT:	CALL	NEWLN
+	EX	DE,HL
+	CALL	ZKOUT
+	LD	A,(SOCKNM)
+	CALL	CLOSE
+	XOR	A
+	LD	(SECHO),A	;reset ECHO to OFF
+	JP	TCPSRV		;restart server
+;---------------------------------------
+	;Input & Send TCP-DATA
+SEDATA:	LD	A,(SECHO)
+	OR	A
+	JR	Z,SEDAT1	;Echo off
+	CALL	NEWLN
+	XOR	A	
+	LD	(CTECHO),A	;reset Echo-Counter
+SEDAT1:	CALL	INTEXT		;PO: HL/BC - HAdresse/SIZE
+	LD	A,(SOCKNM)
+SWDATA:	PUSH	BC		;SIZE TO SEND
+	CALL	SEND		;Send TCP-Data
+	POP	DE
+	RET	C		;Error
+	EX	DE,HL
+	SBC	HL,BC		
+	EX	DE,HL
+	LD	B,D
+	LD	C,E		;SIZE = SIZE - SENT
+	JR	NZ,SWDATA
+	RET
+;-------
+	;Receive TCP-Data to CON or ECHO
+REDATA:	LD	A,(SOCKNM)
+	LD	HL,LINEBF
+	LD	BC,MAXSEG	;Size max.!
+	CALL	RECV		;Recv TCP-Data (RecvSIZE BC)
+	RET	C		;no Data
+	LD	D,A
+	LD	A,(SECHO)
+	OR	A
+	LD	A,D
+	JR	Z,REDAT3
+	;ECHO MODE
+	PUSH	AF
+	LD	A,(CTECHO)
+	OR	A
+	JR	NZ,REDAT1
+	LD	DE,TCPMTE
+	CALL	ZKOUT
+REDAT1:	INC	A
+	CP	10
+	JR	NZ,REDAT2
+	XOR	A		;reset Counter
+REDAT2:	LD	(CTECHO),A
+	LD	H,B
+	LD	L,C
+	CALL	PHLFDC##	;RecvSIZE Out
+	LD	A,' '
+	CALL	COUT##
+	POP	AF
+	LD	HL,LINEBF
+	CALL	SEND		;Echo received TCP-Data (BC)
+	RET
+	;CON MODDE
+REDAT3:	LD	DE,TCPMX4	;received
+	CALL	ZKOUT
+REDAT4:	PUSH	AF
+	CALL	NDTOUT		;Net Data Out
+	POP	AF
+	LD	HL,LINEBF
+	LD	BC,MAXSEG	;Size max.!
+	CALL	RECV		;Recv TCP-Data (RecvSIZE BC)
+	JR	NC,REDAT4	;get all Data
+REDAT6:	CALL	NEWLN
+	RET
+;---------------------------------------
+	; Command 'TCP CLIENT SOCKET'
+TCPCLT:	;check NETWORK
+	CALL	NETTST
+	JP	C,MLDWT
+	CALL	ONTEST
+	JP	C,MLDWT
+	;INIT
+	LD	A,0FFH		;any
+	LD	D,SK_STREAM	;Mode
+	LD	E,SO_NDACK	;Flags
+	CALL	SOCKET
+	LD	DE,TCPMXD	;socket-error
+	JP	C,TCPCSE
+	LD	(SOCKNM),A
+	LD	DE,TCPMX8	;CONNECT TO:
+	CALL	ZKOUT
+	CALL	GTPEER		;get NAME/IP:PORT
+	JP	C,TCPCCE	;ERR->close
+	LD	A,(SOCKNM)
+	LD	HL,SSPORT	;Source Port
+	CALL	BIND
+	JP	C,TCPCCE	;close
+	LD	HL,PEERIP	;Peer IP:PORT
+	CALL	CONNECT
+	JR	NC,TCPCCN	;connected successful
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	LD	A,S_CLOSED
+	CP	E
+	LD	HL,TCPMXD	;socket-error
+	JR	NZ,TCPCRT	;wrong state -> close with MSG
+	LD	HL,TCPMX7	;timeout appeared
+	JR	TCPCRT		;close with MSG
+TCPCCN:	;connected
+	LD	DE,TCPMX9
+	CALL	ZKOUT
+	LD	HL,PEERIP
+	CALL	PDTOUT		;Peer Data Out
+	CALL	NEWLN
+	;client loop
+TCPCCL:	CALL	CST##		;CON ?
+	JR	NZ,TCPCNI	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	;check break
+	CP	ETX
+	JR	Z,TCPCBE
+	CP	ESC
+	JR	NZ,TCPCCI
+TCPCBE:	LD	A,(SOCKNM)
+	CALL	SHUTDN
+	CALL	NEWLN
+	LD	HL,TCPMX6	;disconnected
+	JR	TCPCRT		;close
+TCPCCI:	AND	0DFH		;UCASE
+	CP	'E'
+	CALL	Z,SWECHO
+	;check send request
+	CP	TAB
+	CALL	Z,SEDATA	;input & send DATA
+TCPCNI:	;check receiver
+	CALL	REDATA		;receive DATA
+	;check socket State
+	LD	A,(SOCKNM)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	LD	HL,TCPMXA	;'server canceled connection'
+	LD	A,S_CLSWAIT
+	CP	E
+	JR	Z,TCPCRT
+	LD	HL,TCPMX7	;'timeout'
+	LD	A,S_CLOSED
+	CP	E
+	JR	NZ,TCPCCL	;loop
+TCPCRT:	CALL	NEWLN
+	EX	DE,HL
+	CALL	ZKOUT		;State
+TCPCCE:	LD	A,(SOCKNM)
+	CALL	CLOSE
+	LD	DE,TCPMX5	;closed
+TCPCSE:	CALL	ZKOUT
+	XOR	A
+	LD	(SECHO),A	;reset ECHO to OFF
+	JP	MLDWT
+;---------------------------------------
+	; Command 'UDP SOCKET'
+UDPDGR:	;check NETWORK
+	CALL	NETTST
+	JP	C,MLDWT
+	CALL	ONTEST
+	JP	C,MLDWT
+	;INIT
+	LD	A,0FFH		;any
+	LD	D,SK_DGRAM	;Mode
+	LD	E,0		;Flags
+	CALL	SOCKET
+	LD	DE,TCPMXD	;socket-error
+	JR	C,UDPDSE
+	LD	(SOCKNM),A
+	LD	HL,SSPORT	;Source Port
+	CALL	BIND
+	CALL	C,ZKOUT
+	JR	C,UDPDLE	;close
+	CALL	CONNECT
+	CALL	C,ZKOUT
+	JR	C,UDPDLE	;close
+	LD	DE,TCPMXB	;ready
+	CALL	ZKOUT
+	;UDP loop
+UDPDLP:	CALL	CST##		;CON ?
+	JR	NZ,UDPSNI	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	;check break
+	CP	ETX
+	JR	Z,UDPDLE
+	CP	ESC
+	JR	Z,UDPDLE
+	AND	0DFH		;UCASE
+	CP	'E'
+	CALL	Z,SWECHO
+	;check send request
+	CP	TAB
+	CALL	Z,UDPSDT	;input & send UDP-Datagram
+UDPSNI:	;check receiver
+	CALL	RSCKDT		;receive UDP-Datagram
+	JR	UDPDLP		;loop
+	;close & break
+UDPDLE:	CALL	NEWLN
+	LD	A,(SOCKNM)
+	CALL	CLOSE
+	LD	DE,TCPMXC	;offline
+UDPDSE:	CALL	ZKOUT
+	XOR	A
+	LD	(SECHO),A	;ECHO off
+	JP	MLDWT
+;-------
+	;Input & Send UDP-Datagram
+UDPSDT:	LD	A,(SECHO)
+	OR	A
+	JR	Z,UDPSD1	;Echo off
+	CALL	NEWLN
+	XOR	A	
+	LD	(CTECHO),A	;reset Echo-Counter
+UDPSD1:	LD	DE,TCPMXY
+	CALL	ZKOUT		;'SEND TO: '
+	CALL	GTPEER		;get NAME/IP:PORT
+	RET	C		;ERR
+	CALL	INTEXT		;HL/BC: ADR Data/SIZE
+	LD	DE,TCPMXZ
+	CALL	ZKOUT		;'SEND TEXT ... '
+	LD	DE,PEERIP	;Peer IP:PORT
+	LD	A,(SOCKNM)
+	CALL	SENDTO
+	LD	DE,TCPMX7	;Timeout
+	JR	C,UDPSD2
+	LD	DE,TCPMXE	;Send OK
+UDPSD2:	CALL	ZKOUT
+	RET
+;-------
+	;Receive UDP-DATA to CON or ECHO (max. 1472 Byte per Datagram!)
+RSCKDT:	LD	A,(SOCKNM)
+	LD	HL,LINEBF
+	LD	DE,ARG1
+	LD	BC,MAXMTU-RH_UDP ;PacketSize max.!
+	CALL	RECVFR
+	RET	C		;no Data
+	LD	A,(SECHO)
+	OR	A
+	JR	Z,RSCKD3
+	;ECHO MODE
+	LD	A,(CTECHO)
+	OR	A
+	JR	NZ,RSCKD1
+	LD	DE,TCPMTE
+	CALL	ZKOUT
+RSCKD1:	INC	A
+	CP	10
+	JR	NZ,RSCKD2
+	XOR	A		;reset Counter
+RSCKD2:	LD	(CTECHO),A
+	LD	H,B
+	LD	L,C
+	CALL	PHLFDC##	;PacketSize Out
+	LD	A,' '
+	CALL	COUT##
+	LD	HL,LINEBF
+	LD	DE,ARG1		;Peer Data
+	LD	A,(SOCKNM)
+	CALL	SENDTO		;Echo Bytes
+	RET
+	;CON MODE
+RSCKD3:	LD	DE,TCPMXF	;'RecFrom'
+	CALL	ZKOUT
+	LD	HL,ARG1
+	CALL	IPPOUT		;IP+Port OUT
+	CALL	NDTOUT		;Net Data Out
+	CALL	NEWLN
+	RET
+;---------------------------------------
+	; Command 'ICMP SOCKET'
+IPMRAW:	;check NETWORK
+	CALL	NETTST
+	JP	C,MLDWT
+	CALL	ONTEST
+	JP	C,MLDWT
+	;INIT
+	LD	A,0FFH		;any
+	LD	D,SK_IPLRAW	;IP-Layer RAW Socket
+	LD	E,PT_ICMP	;IP-Protocol
+	CALL	SOCKET		;get handle
+	LD	DE,TCPMXD	;socket-error
+	JP	C,IPMRSE
+	LD	(SOCKNM),A	;save handle
+	CALL	CONNECT
+	CALL	C,ZKOUT
+	JP	C,IPMRLE	;close and end
+	LD	DE,TCPMXG	;ready
+	CALL	ZKOUT
+	;IP loop
+IPMRLP:	CALL	CST##		;CON ?
+	JR	NZ,IPMRNI	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	;check break
+	CP	ETX
+	JR	Z,IPMRLE
+	CP	ESC
+	JR	Z,IPMRLE
+IPMRNI:	;check receiver
+	LD	A,(SOCKNM)
+	LD	HL,LINEBF	;for Data
+	LD	DE,ARG1		;for Header
+	LD	BC,2		;min. ReadSize
+	PUSH	BC
+	CALL	RECVFR		;Recv min. ReadSize IP-Data
+	POP	HL
+	JR	C,IPMRND	;no Data
+	SBC	HL,BC		;received - min.
+	JR	NZ,IPMRND	;more Data required
+	LD	DE,TCPMXK
+	CALL	ZKOUT
+	LD	DE,TCPMX4
+	CALL	ZKOUT
+	LD	HL,ARG3
+	LD	A,(HL)
+	INC	HL
+	LD	L,(HL)
+	LD	H,A		;IP-DataSize from Header
+	CALL	PHLFDC##	;Out
+	LD	DE,TCPMXM
+	CALL	ZKOUT
+	CALL	NEWLN
+	LD	DE,TCPMXF
+	CALL	ZKOUT
+	LD	HL,ARG1		;IP
+	CALL	IPOUT		;Out
+	CALL	NEWLN
+	LD	DE,TCPMXQ
+	CALL	ZKOUT
+	LD	HL,LINEBF	;Data
+	LD	A,(HL)
+	CALL	PAFDC##		;IP-Packet Type
+	INC	HL
+	LD	DE,TCPMXR
+	CALL	ZKOUT
+	LD	A,(HL)
+	CALL	PAFDC##		;IP-Packet Code
+	CALL	NEWLN
+	;check socket State
+IPMRND:	LD	A,(SOCKNM)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	INC	E
+	DEC	E		;offline ?
+	JR	NZ,IPMRLP	;loop
+	;close & break
+IPMRLE:	LD	A,(SOCKNM)
+	CALL	CLOSE
+	LD	DE,TCPMXH	;offline
+IPMRSE:	CALL	ZKOUT
+	JP	MLDWT
+;---------------------------------------
+	; Command 'MAC SOCKET'
+MACRAW:	;check NETWORK
+	CALL	NETTST
+	JP	C,MLDWT
+	CALL	ONTEST
+	JP	C,MLDWT
+	;INIT
+	XOR	A		;Socket 0 required!
+	LD	D,SK_MACLRAW	;MAC-Layer RAW Socket
+	CALL	SOCKET
+	LD	DE,TCPMXD	;socket-error
+	JP	C,MACRSE
+	LD	(SOCKNM),A
+	CALL	CONNECT
+	CALL	C,ZKOUT
+	JP	C,MACRLE	;close and end
+	LD	DE,TCPMXI	;ready
+	CALL	ZKOUT
+	;MAC loop
+MACRLP:	CALL	CST##		;CON ?
+	JR	NZ,MACRNI	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	;check break
+	CP	ETX
+	JP	Z,MACRLE
+	CP	ESC
+	JP	Z,MACRLE
+MACRNI:	;check receiver
+	LD	A,(SOCKNM)
+	LD	HL,LINEBF	;for Data
+	LD	DE,ARG1		;for Header
+	LD	BC,14		;min. ReadSize
+	PUSH	BC
+	CALL	RECVFR		;Recv min. ReadSize MAC-Data
+	POP	HL
+	JP	C,MACNOD	;no Data
+	SBC	HL,BC		;received - min.
+	JR	NZ,MACNOD	;more Data required
+	;MAC-Data Out
+	LD	DE,TCPMXL
+	CALL	ZKOUT
+	LD	DE,TCPMX4
+	CALL	ZKOUT
+	LD	HL,ARG1
+	LD	A,(HL)
+	INC	HL
+	LD	L,(HL)
+	LD	H,A		;DataSize from Header
+	DEC	HL
+	DEC	HL		;MAC-DataSize=DataSize-HeaderSize
+	CALL	PHLFDC##	;Out
+	LD	DE,TCPMXM
+	CALL	ZKOUT
+	CALL	NEWLN
+	LD	DE,TCPMXN
+	CALL	ZKOUT
+	LD	HL,LINEBF	;Data
+	CALL	MACOUT		;Destination-MAC
+	CALL	NEWLN
+	LD	DE,TCPMXO
+	CALL	ZKOUT
+	CALL	MACOUT		;Source-MAC
+	CALL	NEWLN
+	LD	DE,TCPMXP
+	CALL	ZKOUT
+	LD	B,(HL)
+	INC	HL
+	LD	C,(HL)
+	LD	HL,00800H
+	LD	DE,TCPMXS	;IP-Packet
+	OR	A
+	SBC	HL,BC
+	JR	Z,MACCT
+	LD	HL,00806H
+	LD	DE,TCPMXT	;ARP-Packet
+	OR	A
+	SBC	HL,BC
+	JR	NZ,MACCN
+MACCT:	CALL	ZKOUT
+	JR	MACNL
+MACCN:	LD	H,B
+	LD	L,C
+	CALL	PHL4HC##	;Packet-TYPE (HEX)
+MACNL:	CALL	NEWLN
+	;check socket state
+MACNOD:	LD	A,(SOCKNM)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	INC	E
+	DEC	E		;offline ?
+	JP	NZ,MACRLP	;loop
+	;close & break
+MACRLE:	LD	A,(SOCKNM)
+	CALL	CLOSE
+	LD	DE,TCPMXJ	;offline
+MACRSE:	CALL	ZKOUT
+	JP	MLDWT
+;---------------------------------------
+	; Command 'PEER PORT TCP/UDP'	
+SPPTXA:	DB	'PEER PORT TCP/UDP (dec.)',CR,LF
+	DB	'  current : ','$'
+SPPTXI:	DB	'0...65535 : ','$'
+STPEPT:	LD	DE,SPPTXA
+	CALL	ZKOUT
+	LD	HL,PEERPT
+	LD	D,(HL)
+	INC	HL
+	LD	E,(HL)		;load NOrder (memory) to HOrder (register)!
+	EX	DE,HL
+	CALL	PHLFDC##
+	CALL	NEWLN
+	JR	STPPTI
+STPPTW:	LD	A,BEEP		;Error
+	CALL	COUT##
+STPPTI:	LD	DE,SPPTXI
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,STPPTW	;>1
+	LD	A,(ARGN)
+	OR	A
+	RET	Z		;no Input
+	LD	HL,(PARG1)
+	CALL	ATOI		;convert String
+	JR	C,STPPTW
+	CALL	PAEVAL
+	JR	C,STPPTW
+	LD	HL,PEERPT	;-> PEER-PORT
+	LD	(HL),D
+	INC	HL
+	LD	(HL),E		;save in NOrder to memory!
+	RET
+;---------------------------------------
+	; Command 'LOCAL PORT TCP/UDP'	
+PRTTXA:	DB	'LOCAL PORT TCP/UDP (dec.)',CR,LF
+	DB	'  current : ','$'
+PRTTXI:	DB	'0...65535 : ','$'
+STLOPT:	LD	DE,PRTTXA
+	CALL	ZKOUT
+	LD	HL,SSPORT
+	LD	D,(HL)
+	INC	HL
+	LD	E,(HL)		;load NOrder (memory) to HOrder (register)!
+	EX	DE,HL
+	CALL	PHLFDC##
+	CALL	NEWLN
+	JR	SSPORI
+SSPORW:	LD	A,BEEP		;Error
+	CALL	COUT##
+SSPORI:	LD	DE,PRTTXI
+	CALL	ZKOUT
+	LD	B,1		;1 Parameter
+	CALL	INPUT
+	JR	NZ,SSPORW	;>1
+	LD	A,(ARGN)
+	OR	A
+	RET	Z		;no Input
+	LD	HL,(PARG1)
+	CALL	ATOI		;convert String
+	JR	C,SSPORW
+	CALL	PAEVAL
+	JR	C,SSPORW
+	LD	HL,SSPORT
+	LD	(HL),D
+	INC	HL
+	LD	(HL),E		;save in NOrder to memory!
+	RET
+	
+;#######################################################
+;### CP/M-NET START & MENU Handling ####################
+;#######################################################
+BEGIN:	;check for CP/M 2+
+	LD	C,CPMVER
+	CALL	BDOS
+	LD	(SYSVER),A	;CP/M version
+	AND	0F0H		;version required 2+
+	CP	20H
+	LD	DE,CPMERR
+	CALL	C,ZKOUT
+	JP	C,NTQUIT
+	LD	SP,STACK	;set local stack
+	;parse and test ARG's
+	;
+	;because Network Hardware-Driver is not initialized
+	; here, do not call hardware-related API functions,
+	;    only functions for CONVERSION are allowed!
+	;
+	LD	HL,DMA+1
+	LD	DE,ARGMAX	;ARG-TAB
+	XOR	A
+	INC	A		;terminate Parameter with 0
+	CALL	ARGV##		;parse ARG's
+	LD	DE,ARGOVF	;too many ARG's
+	JR	NZ,MSGOUT
+	LD	A,(ARGN)
+	OR	A
+	JR	Z,NENGC3	;skip parser
+	;init first ARG-pointer
+	LD	HL,PARG1	;address of first ARG-PTR
+	LD	(N_TEMP),HL
+	JR	NENGC2
+NENGC1:	;count parsed ARG's
+	LD	HL,ARGN
+	DEC	(HL)
+	JR	Z,HLPOUT	;unknown ARG's parsed
+NENGC2:	;get ARG-pointer
+	LD	HL,(N_TEMP)
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	INC	HL
+	LD	(N_TEMP),HL	;save next ARG-pointer
+	EX	DE,HL		;HL: address ARG
+	LD	A,'-'
+	CP	(HL)
+	JR	NZ,NENGC1	;next ARG
+	INC	HL
+	LD	A,(HL)
+	AND	0DFH		;ucase
+	CP	'H'		;help
+HLPOUT:	LD	DE,NETHLP
+	JR	Z,MSGOUT
+	CP	'V'		;version
+	CALL	Z,NETVER
+	JR	Z,LINOUT
+	CP	'I'		;interface
+	JR	Z,NENGC3
+	CP	'T'		;tcp/ip
+	JR	Z,NENGC3
+	CP	'N'		;network
+	JR	Z,NENGC3
+	JR	NENGC1		;next ARG
+MSGOUT:	CALL	ZKOUT
+LINOUT:	CALL	NEWLN
+	JP	ENDE
+NENGC3:	;try Network init
+	PUSH	AF
+	XOR	A		;DRV->KOP (required only for KC85)
+	CALL	N_INIT
+	POP	BC
+	CALL	C,ZKOUT		;->DE=ERR-string
+	CALL	C,NEWLN
+	LD	DE,NETHT2
+	JR	C,MSGOUT	;show "-h" and exit
+	;network available
+	XOR	A
+	OR	B
+	JR	NZ,MBGIN	;-> goto menu
+;*** CPMNET MENU-Loop ******************
+MENU:	;synchronize CPMNET -> KCNET
+	LD	HL,(KCNPTR)	;Pointer local
+	CALL	N_PTR		;write to KCNET
+	;synchronize CPMNET <- KCNET
+	CALL	GTTNET		;read IP/MASK/GATEWAY/MAC
+	;MENU OUT
+	LD	A,CLS	
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	LD	DE,MTXTK	;TOP Text
+	CALL	ZKOUT
+	LD	HL,(MPUAD)
+	CALL	CJPHL		;Info
+	LD	DE,(MTXAD)	;CMD's
+	CALL	ZKOUT
+	JR	MWAIT		;Menu LOOP
+MBEEP:	LD	A,BEEP
+	CALL	COUT##
+MWAIT:	CALL	CAPIN##		;Capitalized Input
+	;check KEY
+MBGIN:	LD	L,0
+	CP	'N'
+	JR	Z,MSWTCH
+	INC	L
+	CP	'T'
+	JR	Z,MSWTCH
+	INC	L
+	CP	'I'
+	JR	Z,MSWTCH
+	CP	'Q'
+	JR	Z,ENDE
+	CP	'X'
+	JR	Z,ENDE
+	LD	HL,(MFANZ)
+	LD	B,L		;# of cmd's
+	LD	DE,(MJPAD)	;cmdtab
+	LD	HL,(MKEYT)	;keytab
+MTAST:	CP	(HL)
+	JR	Z,FCALL		
+	INC	HL		;next key
+	INC	DE
+	INC	DE		;next cmd
+	DJNZ	MTAST
+	JR	MBEEP		;key without cmd
+FCALL:	;get cmd ADR 
+	LD	A,(DE)
+	LD	L,A
+	INC	DE
+	LD	A,(DE)
+	LD	H,A
+	CALL	CJPHL		;call cmd
+	JP	MENU
+CJPHL:	JP	(HL)
+	;switch MENU
+MSWTCH:	LD	H,0		;L contains #
+	ADD	HL,HL
+	LD	D,H
+	LD	E,L
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,DE		;*10
+	LD	DE,M1PRM
+	ADD	HL,DE		;+ adrtab
+	LD	DE,MPUAD
+	LD	BC,10
+	LDIR			;make current menu
+	JP	MENU
+	;
+ENDE:	;close CPMNET 
+NTQUIT:	LD	C,0		;go to CP/M
+	CALL	BDOS		;don't JUMP (gives an 
+				;Error with Z-System)
+;*** MENU Management *******************
+	;TOP Text
+MTXTK:	DB	' ### CP/M-NET Version ',V_MAJOR+'0','.',V_MINOR+'0'
+	DB	' >susowa< 2008-2011 ###',CR,LF
+	DB	'$'
+	;network = default menu
+MPUAD:	DW	MPUP1
+MTXAD:	DW	MTXT1
+MKEYT:	DW	KEYTB1
+MJPAD:	DW	JPTB1
+MFANZ:	DW	(JPTB1E-JPTB1)/2
+	;available menus
+M1PRM:	;network
+	DW	MPUP1
+	DW	MTXT1
+	DW	KEYTB1
+	DW	JPTB1
+	DW	(JPTB1E-JPTB1)/2
+M2PRM:	;tcpip-stack
+	DW	MPUP2
+	DW	MTXT2
+	DW	KEYTB2
+	DW	JPTB2
+	DW	(JPTB2E-JPTB2)/2
+M3PRM:	;interface
+	DW	MPUP3
+	DW	MTXT3
+	DW	KEYTB3
+	DW	JPTB3
+	DW	(JPTB3E-JPTB3)/2
+;*** Menu 1 ****************************
+	;COMMANDS 1
+MTXT1:	DB	'--------------    NETWORK MENU    ---------------',CR,LF
+	DB	'  H - DHCP CLIENT',CR,LF
+	DB	'  P - PING CLIENT',CR,LF
+	DB	'  D - DNS CLIENT',CR,LF
+	DB	'  S - TCP SERVER SOCKET',CR,LF
+	DB	'  C - TCP CLIENT SOCKET',CR,LF
+	DB	'  U - UDP SOCKET',CR,LF
+	DB	'  O - ICMP SOCKET',CR,LF
+	DB	'  M - MAC SOCKET             T - TCPIP-STACK MENU',CR,LF
+	DB	'  1 - PEER PORT TCP/UDP      I - INTERFACE MENU',CR,LF
+	DB	'  2 - LOCAL PORT TCP/UDP     Q - CPMNET Quit',CR,LF
+	DB	'-------------------------------------------------',CR,LF
+	DB	'$'
+	;KEYTAB 1
+KEYTB1:	DB	'HPDSCUOM12'	
+	;FTAB 1
+JPTB1:
+	DW	DHCPC
+	DW	PINGC
+	DW	DNSQU
+	DW	TCPSRV	
+	DW	TCPCLT
+	DW	UDPDGR
+	DW	IPMRAW
+	DW	MACRAW
+	DW	STPEPT
+	DW	STLOPT
+JPTB1E:
+	;Info 1:'           PEER: xxx.xxx.xxx.xxx:xxxxx '
+	;	'          LOCAL: xxx.xxx.xxx.xxx:xxxxx '
+MPU1X1:	DB	'         PEER: ','$'
+MPU1X2:	DB	'        LOCAL: ','$'
+MPUP1:	LD	DE,MPU1X1		
+	CALL	ZKOUT
+	LD	HL,PEERIP	;Peer
+	CALL	IPPOUT		;IP:PORT Out
+	LD	DE,MPU1X2
+	CALL	ZKOUT
+	LD	HL,SRCIP	;Local
+	CALL	IPPOUT		;IP:PORT Out
+	RET
+;*** Menu 2 ****************************
+	;COMMANDS 2
+MTXT2:	DB	'--------------  TCP/IP-STACK MENU  --------------',CR,LF
+	DB	'  C - IP-CONFIG',CR,LF
+	DB	'  R - RESET TCP/IP-STACK',CR,LF
+	DB	'  1 - IP-ADDRESS SIPR',CR,LF
+	DB	'  2 - SUBNETMASK SUBR',CR,LF
+	DB	'  3 - GATEWAY GWR',CR,LF
+	DB	'  4 - MAC-ADDRESS SHAR',CR,LF
+	DB	'  5 - RETRY-TIME RTR',CR,LF
+	DB	'  6 - RETRY-COUNT RCR          N - NETWORK MENU',CR,LF
+	DB	'  7 - PING-ECHO MR             I - INTERFACE MENU',CR,LF
+	DB	'  8 - SOCKET-MODE Sn_MR        Q - CPMNET Quit',CR,LF
+	DB	'-------------------------------------------------',CR,LF
+	DB	'$'
+	;KEYTAB 2
+KEYTB2:	DB	'CR12345678'	
+	;FTAB 2
+JPTB2:
+	DW	IPCONF
+	DW	SRESET
+	DW	IPADRES
+	DW	SUBNETZ
+	DW	GATEWAY
+	DW	MACADR
+	DW	RTRTIM
+	DW	RTRCNT
+	DW	PRPLSW
+	DW	SCKMOD
+JPTB2E:
+	;Info 2:'   IP-ADDRESS: xxx.xxx.xxx.xxx/xxx.xxx.xxx.xxx'
+	;	'         PING: ECHO REQUESTS ANSWER'
+MPU2X1:	DB	'   IP-ADDRESS: ','$'
+MPU2X2:	DB	'         PING: ECHO REQUESTS ','$'
+MPU2X3:	DB	'ANSWER',CR,LF,'$'
+MPU2X4:	DB	'IGNORE',CR,LF,'$'
+MPUP2:	LD	DE,MPU2X1
+	CALL	ZKOUT
+	LD	HL,SRCIP
+	CALL	IPOUT		;IP Out
+	LD	A,'/'
+	CALL	COUT##
+	LD	HL,SRCMSK
+	CALL	IPOUT		;MASK Out
+	CALL	NEWLN
+	LD	DE,MPU2X2
+	CALL	ZKOUT
+	LD	HL,N_MODE	
+	CALL	N_RDBT		;read MR to A
+	AND	MR_PB
+	LD	DE,MPU2X3
+	JR	Z,MPUP21
+	LD	DE,MPU2X4
+MPUP21:	CALL	ZKOUT
+	RET
+;*** Menu 3 ****************************
+	;COMMANDS 3
+MTXT3:	DB	'--------------   INTERFACE MENU    --------------',CR,LF
+	DB	'  1 - POINTER ADR (16Bit)',CR,LF
+	DB	'  2 - WRBYTES B1 B2 ... B10 (8Bit)',CR,LF
+	DB	'  3 - RDBYTES COUNTER (16Bit)',CR,LF
+	DB	'  4 - WRBYTE ADR (16Bit) BYTE (8Bit)',CR,LF
+	DB	'  5 - RDBYTE ADR (16Bit)',CR,LF
+	DB	'  6 - INTERFACE-ID',CR,LF
+	DB	'  7 - TIMER',CR,LF
+	DB	'  8 - SERVER IP-ADDRESSES    N - NETWORK MENU',CR,LF
+	DB	'  9 - DYNAMIC PORT           T - TCPIP-STACK MENU',CR,LF
+	DB	'  0 - COMMAND ERRORS         Q - CPMNET Quit',CR,LF
+	DB	'-------------------------------------------------',CR,LF
+	DB	'$'
+	;KEYTAB 3
+KEYTB3:	DB	'1234567890'	
+	;FTAB 3
+JPTB3:
+	DW	CSZEIG
+	DW	CSBYTES
+	DW	CLBYTES
+	DW	CSBYTE
+	DW	CLBYTE
+	DW	KENNUNG
+	DW	TIMER
+	DW	SRVIPA
+	DW	DYNPRT
+	DW	CMDERR
+JPTB3E:
+	;Info 3:' Software x.x      Hardware x.x      online_'
+MPU3X1:	DB	LF,' Software ','$'
+MPU3X2:	DB	'      Hardware ','$'
+MPU3X3:	DB	'      online ',CR,LF,'$'
+MPU3X4:	DB	'      offline',CR,LF,'$'
+	;
+MPUP3:	LD	DE,MPU3X1		
+	CALL	ZKOUT
+	CALL	N_SVER		;READ SW-VERSION
+	CALL	VEROU
+	LD	DE,MPU3X2
+	CALL	ZKOUT	
+	CALL	N_HVER		;READ HW-VERSION
+	CALL	VEROU
+	CALL	N_LSTA		;GET LINK State
+	XOR	A
+	OR	E
+	LD	DE,MPU3X3
+	JR	NZ,MPUP31
+	LD	DE,MPU3X4
+MPUP31:	CALL	ZKOUT
+	RET
+	;
+VEROU:	LD	A,H
+	ADD	A,'0'
+	CALL	COUT##
+	LD	A,'.'
+	CALL	COUT##
+	LD	A,L
+	ADD	A,'0'
+	CALL	COUT##
+	RET
+;*** Buffer for Domain-Name ****************************
+DMNBUF:	DS	255+1,0		;max. length
+;*** Buffer for Packet *********************************
+LINEBF:	DS	MAXMTU,0	;MTU max.
+;*** Stack local ***********************
+	DS	128,0		;depth = 64
+STACK	EQU	$
+;***************************************
+EEMAIN	EQU	$	;last ADR main program
+;*** Code-End **************************
+
+IF2        
+	.PRINTX "CPMNETxx.COM"
+	.RADIX  16
+        PRMSG   <KCN-INC LENGTH:>,%(AAMAIN-103H)
+        PRMSG   <    MAIN BEGIN:>,%AAMAIN
+        PRMSG   <   MAIN LENGTH:>,%(EEMAIN-AAMAIN)
+        PRMSG   <  LAST ADDRESS:>,%EEMAIN
+        PRMSG   <PROGRAM LENGTH:>,%(EEMAIN-100H)
+	.RADIX  10
+ENDIF
+	.DEPHASE
+	END

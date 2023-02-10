@@ -1,0 +1,6195 @@
+;*******************************************************
+;
+;		  FTP CLIENT CP/M 2+
+;
+;		###     KCNET     ###
+;		 WIZnet TCP/IP-Stack 
+;		###  susowa 2008  ###
+;
+;  Name		: FTPxx.MAC
+;  Date		: 07.11.2010
+;  Modified	: 25.02.2012
+;		: 21.11.2022 d_kef
+;  Hardware	: Net4CPC - W5100S
+;
+;  extern       : SYSLIB.REL
+;
+;  Includes:
+;     KCNET.INC - Configuration
+;   N4C-W51.INC - Interface driver Net4CPC W5100S
+;  W5100-11.INC - TCP/IP and Socket driver
+;   DNSC-10.INC - DNS client
+;
+;*******************************************************
+
+;*** VERSION *******************************************
+V_MAJOR	EQU	1
+V_MINOR	EQU	1
+;*** MACROS ********************************************
+NO	EQU	0
+YES	EQU	NOT NO
+	;
+PRMSG   MACRO   MSG,N       
+	.PRINTX *MSG,N*
+	ENDM
+;*** common Equations **********************************
+	;destination
+        .PHASE  00100H
+	;CPU
+	.Z80
+	;CP/M 2+ constants
+BDOS	EQU	5
+DMA     EQU	80H
+	;BDOS
+WBOOT	EQU	0		;warm boot
+CPMVER	EQU	12		;get CP/M-Version
+STBEMD	EQU	45		;set BDOS error-mode
+CPMEXV	EQU	48		;get extended Version
+GTCFLG	EQU	100		;get ZSDOS/ZDDOS flags
+STCFLG	EQU	101		;set ZSDOS/ZDDOS flags
+GETDTS	EQU	102		;get datestamps
+SETDTS	EQU	103		;set datestamps
+	;CP/M EOF code
+EOFCD	EQU	1AH
+	;missing SYSLIB symbols
+	EXT	GUA		;get User area 
+	EXT	SUA		;set User area 
+;*******************************************************
+
+;*** Start of Code *************************************
+	;start address
+SNOGO:	JP	BEGIN
+	;ZCPR
+	DB	'Z3ENV'
+	DB	1		;type 1
+Z3EPTR:	DW	0		;pointer
+	;"KCNet" files
+	INCLUDE	KCNET.INC	;config file
+;
+	CKMAC	EQU	NO
+	INCLUDE	N4C-W51.INC	;Net4CPC - W5100S routines
+;
+	INCLUDE	W5100-12.INC	;TCP/IP+Socket-Driver
+;
+	INCLUDE	DNSC-11.INC	;DNS-Client
+;
+	;first address main
+AAMAIN	EQU	$
+;*******************************************************
+
+;### FTP-Socket-Structure ##############################
+	;
+F_SOCK	EQU	0		;Socket Nr. (Handle)
+F_SOST	EQU	F_SOCK+1	;Socket-State
+	;7 = 1 - Socket Online
+	;6 = 1 - wait for Reply (Csocket)
+	;5 = 1 - flush Data (Dsocket)
+	;4 = 1 - put file stamp (Dsocket)
+	;3 = 1 - get/put file exists (Dsocket)
+	;2 = 1 - FTP-file opened (Dsocket)
+	;1 = 1 - transfer Error (Dsocket)
+	;0 = 1 - Data-Socket / = 0 - Control-Socket
+F_SVIP	EQU	F_SOST+1	;Server IP-address (Csocket/Dsocket)
+F_SVPT	EQU	F_SVIP+4	;Server Port (Csocket/Dsocket)
+F_CLIP	EQU	F_SVPT+2	;Client IP-address (Dsocket)
+F_CLPT	EQU	F_CLIP+4	;Client Port (Dsocket)
+F_LATS	EQU	F_CLPT+2	;last action timestamp
+F_SIZE	EQU	F_LATS+2	;transfer size in byte
+	;Sender
+F_SHSZ	EQU	F_SIZE+4	;datasize HOrder
+	;Receiver
+F_RHSZ	EQU	F_SHSZ+2	;datasize HOrder
+	;local file-data
+FIOCTL	EQU	F_RHSZ+2	;file I/O control block
+FIOFCB	EQU	FIOCTL+10	;file I/O FCB
+FGFFCB	EQU	FIOFCB+36	;get file FCB
+	;FTP-Servername
+F_NAME	EQU	FGFFCB+12	;namestring+0
+F_SCKE	EQU	F_NAME+256	;structure end +1
+	;
+F_SCKL	EQU	F_SCKE-F_SOCK	;structure length
+	;
+;### State table #######################################
+;FTP-State (IY)
+F_STAT:	DB	0
+	;7 = 1 - OUT message activated (TXTOUT)
+	;6 = 1 - BINARY Data-Type ON / = 0 - ASCII Data-Type ON
+	;5 = 1 - Debug mode ON
+	;4 = 1 - Passive open ON
+	;3 = 1 - Interactive prompting ON
+	;2 = 1 - Verbose output ON
+	;1 = 1 - Lunique ON
+	;0 = 1 - Runique ON
+;Local Command-State (IY+1)
+F_SCMD:	DB	0
+	;7 = 1 - Callback function ON
+	;6 = 1 - Redirect local input ON
+	;5 = 1 - Blur output ON
+	;4 = 1 - One char input ON
+	;3 = 1 - Prompt disabled
+	;2 = 1 - Command argument found 
+	;1 = 1 - Suitable command found (Show Version ON, during start)
+	;0 = 1 - Rebuild commandline (Show Help ON, during start)
+;Remote Command-State (IY+2)
+F_SREM:	DB	0
+	;7 = 1 - Remote reply received
+	;6 = 1 - Incomplete response
+	;5 = 1 - Multimessage response
+	;4 = 1 - Reply code line active
+	;3 = 1 - Close connection active
+	;2 = 1 - Abort requested
+	;1 = 1 - Quit requested
+	;0 = 1 - Send remote command
+;Transfer-State (IY+3)
+F_TRAN:	DB	0
+	;7 = 1 - Transfer active (Dsocket)
+	;6 = 1 - M-Command active backup
+	;5 = 1 - M-command active
+	;4 = 1 - Remote DIR active
+	;3 = 1 - EOF-Stop ON
+	;2 = 1 - System files ON
+	;1 = 1 - Recv Date/Time ON
+	;0 = 1 - Send Date/Time ON
+;Feature-State (IY+4)
+F_FEAT:	DB	0
+	;7 = 1 - Logfile active
+	;6 = 1 - Script file active
+	;5 = 1 - Next scriptline has been read
+	;4 = 1 - LOCAL Date/Time support
+	;3 = 1 - SITE UTIME support
+	;2 = 1 - MFCT support
+	;1 = 1 - MFMT support
+	;0 = 1 - MDTM support
+;### Work RAM ##########################################
+	;table for commandline ARGV## addresses
+ARGMAX:	DB	9		;max. 9 Arguments
+ARGN:	DB	0		;Number of Arguments found
+TARG1:	DW	0		;ADR ARG1
+TARG2:	DW	0		;ADR ARG2
+TARG3:	DW	0		;ADR ARG3
+TARG4:	DW	0		;ADR ARG4
+TARG5:	DW	0		;ADR ARG5
+TARG6:	DW	0		;ADR ARG6
+TARG7:	DW	0		;ADR ARG7
+TARG8:	DW	0		;ADR ARG8
+TARG9:	DW	0		;ADR ARG9
+	;ptr-table for TPA buffers (about 6,5 kB)
+FCSSIZ	EQU	F_SCKL		;control socket structure
+FCSBUF:	DW	0000H
+FDSSIZ	EQU	F_SCKL		;data socket structure
+FDSBUF:	DW	0000H
+F_LSIZ	EQU	2*F_ISIZ	;local commands and MSG buffer
+F_LBUF:	DW	0000H
+F_RSIZ	EQU	F_ISIZ		;remote commands buffer
+F_RBUF:	DW	0000H
+F_CSIZ	EQU	F_ISIZ+2	;Send control command buffer
+F_CBUF:	DW	0000H
+F_MSIZ	EQU	MAXSEG+1	;Recv control message buffer
+F_MBUF:	DW	0000H
+F_DSIZ	EQU	MAXSEG		;data buffer ftp data
+F_DBUF:	DW	0000H
+F_FSIZ	EQU	128*8		;data buffer local file (max. size = MAXSEG !)
+F_FBUF:	DW	0000H
+F_ISIZ	EQU	60+1+255+1	;input buffer (longest file cmd + SPC + max. path+0)
+F_IBUF:	DW	0000H
+F_HSIZ	EQU	2*F_ISIZ+1	;input history buffer
+F_HBUF:	DW	0000H
+F_VSIZ	EQU	32		;dummy for at least 2 dir entries
+F_VBUF:	DW	0000H		;(memory up to CCP-1)
+	;records for script and logfile
+SCFREC	EQU	8
+	;script file
+SCRSFT:	DB	'FTP'		;standard FT
+SCR_DU:	DW	0		;script DU: (low=U)
+NWS_DU:	DW	0		;new script DU:
+	;
+SCFCTL:	DB	SCFREC		;used number of records
+	DS	7,0		;filled in by FYIO
+SCFBUF:	DW	0000H		;working file buffer
+SCFFCB:	DB	0		;filled in by FYIO to 0
+	DB	'AUTOEXECFTP'	;FN.FT for autoload
+	DS	24,0		;filled in by FYIO
+	;logfile
+LOGSFT:	DB	'LOG'		;standard FT
+LOG_DU:	DW	0		;log DU: (low=U)
+	;
+LOGCTL:	DB	SCFREC		;used number of records
+	DS	7,0		;filled in by FYIO
+LOGBUF:	DW	0000H		;working file buffer
+LOGFCB:	DB	0		;filled in by FYIO to 0
+	DS	8,' '		;file name
+	DS	3,' '		;file type
+	DS	24,0		;filled in by FYIO
+	;history file
+HIFSFT	EQU	SCRSFT		;standard FT
+HIF_DU:	DW	0		;hist. DU: (low=U)
+	;
+HIFCTL:	DB	F_LSIZ/128	;used number of records
+	DS	7,0		;filled in by FYIO
+HIFBUF:	DW	0000H		;working file buffer (F_LBUF)
+HIFFCB:	DB	0		;filled in by FYIO to 0
+	DB	'HISTORY FTP'	;FN.FT for autoload
+	DS	24,0		;filled in by FYIO
+	;ftp file
+F_PCMD:	DB	'____'		;put-cmd's
+	DB	' '		;SPC
+F_GFNM:	DB	'FTP$FILE.$$$',0 ;ftp-file
+	;Server socket from resolver
+F_PEER:	DB	0,0,0,0		;Server IP-address NOrder
+F_PORT:	DB	0,21		;Server Port number NOrder
+	;other
+BSSTAM:	DB	0		;screen state (KC85)
+SYSVER:	DB	0		;CP/M-Version
+EXTVER:	DB	0		;extended CP/M-Version
+EXTCFG:	DW	0		;SYS-Config ZSDOS/ZDDOS
+F_IPTR:	DW	0		;in-ptr input buffer
+F_EPTR:	DW	0		;end-ptr input buffer
+F_HPTR:	DW	0		;cmd pointer history buffer
+CUR_DU:	DW	0		;current DU: (low=U)
+BF_PTR:	DW	0		;PTR to script-filename
+TXTOUT:	DW	0		;PTR to out message
+CBADDR:	DW	0		;PTR to callback function
+RDRPRO:	DW	0		;PTR to redirect prompt
+RPLYCD:	DW	0		;reply code control message
+RPLYCH:	DB	0		;reply char control message
+RPLYSZ:	DW	0		;reply message length
+FUMPTR:	DW	0		;PTR to unparsed message
+FUMSIZ:	DW	0		;size of unparsed message
+DSCKUP:	DW	0		;PTR to Dsocket data-handler
+DSCKRT:	DW	0		;PTR to data-handler return
+DSCKNM:	DW	0		;PTR to filename
+DSKTSZ:	DW	0		;transfer size in kB
+RPLCCD:	DB	0		;FTP-CMD code
+RPLSUB:	DW	0		;FTP-CMD reply-sub address
+RCGARG:	DW	0		;FTP-CMD arg-address-1
+CFSTAT:	DB	0		;F_STAT backup during commands
+LSTCMD:	DW	0		;PTR to 'LIST'-command Zstring
+MFILES:	DW	0		;M-command number of files
+MCDIRA:	DW	0		;M-command DIR address
+MCDIRN:	DW	0		;M-command file counter
+MCRETA:	DW	0		;M-command return PTR
+MCRETB:	DW	0		;M-command return PTR backup
+B_VBUF:	DW	0		;F_VBUF backup
+MDSSTR:	DS	8+1+3+1,0	;expanded FN.FT+0 MDIR-'spec'-string
+PGSSTR:	DS	8+1+3+1,0	;expanded FN.FT+0 PUT/GET file-string
+SPCSTR:	DS	8+1+3+1,0	;expanded FN.FT+0 DIR 'spec'-string
+ALFSTR:	DB	'????????.???',0 ;'all files' DIR string
+DIRFCB:	DS	12,0		;local DIR FCB
+CONTMP:	DS	6,0		;saved reg's for output break
+TEMP:	DS	16,0		;temp. buffer
+	;Prompt's
+CMDDIR:	DB	'?##/????????:',0 ;DU/DIR:
+CMDPRN:	DB	'ftp> ',0	;normal
+CMDPRT:	DB	' kB> ',0	;transfer
+	;Message's
+F_CMXA:	DB	'Too many arguments (help with -h)!',BEEP,0
+F_CMXB:	DB	'No socket available!',BEEP,0
+F_CMXC:	DB	'Cannot open socket!',BEEP,0
+F_CMXD:	DB	'More TPA required!',BEEP,0
+F_CMXE:	DB	'Not connected.',BEEP,0
+F_CMXF:	DB	'Connecting to ',0
+F_CMXG:	DB	'Connected to ',0
+F_CMXH:	DB	'FTP-Server connection closed.',0
+F_CMXI:	DB	'FTP-Server timeout error!',BEEP,0
+F_CMXJ:	DB	'Unknown command!',BEEP,0
+F_CMXK:	DB	'Ambiguous command!',BEEP,0
+F_CMXL:	DB	CLS,LF
+	DB	' ---------- Welcome to FTP-Client for CP/M 2+ ----------',CR,LF
+	DB	'         ### copyright 2010-2012 by >susowa< ###',CR,LF
+	DB	'  (command list with >?< - commands may be abbreviated)',CR,LF
+	DB	0
+F_CMXM:	DB	'Local directory : ',0
+F_CMXN:	DB	'Command locked - transfer in progress!',BEEP,0
+F_CMXO:	DB	'TPA overflow!',BEEP,0
+F_CMXP:	DB	'Invalid argument!',BEEP,0
+F_CMXQ:	DB	'Commands (may be abbreviated):',CR,LF,LF,0
+F_CMXR:	DB	'Already connected, use CLOSE first!',BEEP,0
+F_CMXS:	DB	'Socket BIND failed!',BEEP,0
+F_CMXT:	DB	'Socket LISTEN failed!',BEEP,0
+F_CMXU:	DB	'Socket CONNECT failed!',BEEP,0
+F_CMXV:	DB	'PASV reply failed!',BEEP,0
+F_CMXW:	DB	'Press key ... ',0
+F_CMXX:	DB	' >KEY< - more ...  >ESC< - break ',0
+F_CMXY:	DB	' file(s)',0
+F_CMXZ: DB	' - Erase? >Y<es >N<o >ESC<-break ',BEEP,0
+F_CMX0:	DB	'Dated ##.##.#### ##.##.## ',0
+F_CMX1:	DB	' of ',0
+F_CMX2:	DB	' file(s) processed.',0
+F_CMX3:	DB	'erased.',0
+	;SYS-Error message
+CPMERR:	DB	'CP/M-System 2+ required !',BEEP,0
+	;DNS resolver
+DNSSYE:	DB	CLLN,'Syntax error "server[:port]" !',BEEP,0
+DNSSEU:	DB	CLLN,'DNS name error!',BEEP,0
+DNSQSE:	DB	CLLN,'DNS server error '
+DNSQSN:	DB	'   ',BEEP,0
+DNSQCE:	DB	CLLN,'DNS client error '
+DNSQCN:	DB	'   ',BEEP,0
+	;File Access Error's
+XE_ILDU: DB	'Invalid DIR|DU: !',BEEP,0
+XE_ILFN: DB	'Invalid FN.FT - use 8.3 without ,:;=%|/\<>()[]{} !',BEEP,0
+XE_AMFN: DB	'Ambiguous filename not allowed!',BEEP,0
+XE_LFNU: DB	'Local filename not unique - skip!',BEEP,0
+XE_RFNU: DB	'Remote filename not unique - skip!',BEEP,0
+XE_DSKF: DB	'Disk full or allocation exceeded!',BEEP,0
+XE_FFEX: DB	'Local file exists - Erase? >Y<es >N<o ',BEEP,0
+XE_RFEX: DB	'Remote file exists - Delete? >Y<es >N<o ',BEEP,0
+XE_LFNF: DB	'Local file not found!',BEEP,0
+XE_SFNF: DB	'Script file not found!',BEEP,0
+XE_SFEX: DB	'Script file exists - Erase? >Y<es >N<o ',BEEP,0
+XE_LFEX: DB	'Logfile exists - Erase? >Y<es >N<o ',BEEP,0
+XE_LWEX: DB	'Logfile write error - closed!',BEEP,0
+	;Switches
+S_HMDU:	DB	'Local HOME Directory :  ',0
+S_EOFM:	DB	'EOF-stop for sender : ',0
+S_INTE:	DB	'Interactive prompting : ',0
+S_LUNI:	DB	'Local unique : ',0
+S_RUNI:	DB	'Remote unique : ',0
+S_RCDT:	DB	'Recv file date/time : ',0
+S_SDDT:	DB	'Send file date/time : ',0
+S_VERB:	DB	'Verbose output : ',0
+S_DEBU:	DB	'Debug mode : ',0
+S_SYSF:	DB	'System files : ',0
+S_ASCI:	DB	'Ascii data type : ',0
+S_BINA:	DB	'Binary data type : ',0
+S_PASS:	DB	'Passive open : ',0
+S_LOGF:	DB	'Log file : ',0
+S_ON:	DB	'ON',0
+S_OFF:	DB	'OFF',0
+	;FTP-Usage
+F_HELP:	DB	'ftp [-h|v] [-pilr] [-s:[DIR|DU:]FN[.FT]] [server[:port]]',CR,LF
+	DB	LF
+	DB	'  HISTORY.FTP - loads automatically',CR,LF
+	DB	' AUTOEXEC.FTP - executes automatically (-s takes precedence!)',CR,LF
+	DB	LF
+	DB	' Options:   -h|v - show help or version and exit',CR,LF
+	DB	'              -p - Passive open OFF',CR,LF
+	DB	'              -i - Interactive prompting OFF',CR,LF
+	DB	'              -l - Local unique OFF',CR,LF
+	DB	'              -r - Remote unique OFF',CR,LF
+	DB	' -s:DIR|DU:FN.FT - Script file with FTP-commands',CR,LF
+	DB	'          server - FTP-Server name or IP-address',CR,LF
+	DB	'            port - FTP-Server port (standard: 21)'
+	DB	0
+	;FTP-Version
+F_VER1:	DB	'###       FTP-Client  CP/M 2+       ###',CR,LF
+	DB	'             Version ',V_MAJOR+'0','.',V_MINOR+'0',CR,LF
+	DB	'         "KCNet TCP/IP-Stack"',CR,LF
+	DB	'### copyright 2010-2012 by >susowa< ###',CR,LF
+	DB	LF,0
+F_VER2:	DB	CR,LF
+	DB	'           Show Help with -h',0
+;### common SUB-programs ###############################
+	;clear RAM
+CLRMEM:	LD	(HL),0
+	LD	D,H
+	LD	E,L
+	INC	DE
+	DEC	BC
+	LDIR
+	RET
+	;CR+LF Out
+NEWLN:	PUSH	AF
+	LD	A,CR
+	CALL	COUT##
+	LD	A,LF
+	CALL	COUT##
+	POP	AF
+	RET
+	;(DE)-string+0/'$' Out
+ZKOUT:	PUSH	AF
+ZKOU1:	LD	A,(DE)
+	INC	DE
+	AND	A
+	JR	Z,ZKOU2
+	CP	'$'
+	JR	Z,ZKOU2
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	ZKOU1
+ZKOU2:	POP	AF
+	RET
+	;show Version
+FTPVER:	PUSH	AF
+	LD	DE,F_VER1
+	CALL	ZKOUT
+	LD	DE,N_DLBL	;IF-driver label
+	CALL	ZKOUT
+	LD	DE,F_VER2
+	CALL	ZKOUT
+	POP	AF
+	RET
+COPMSG:	;activate MSG and copy to MSG buffer
+	LD	DE,(F_LBUF)	;MSG buffer
+	CALL	ACTOUT		;activate
+	CCF			;clear CY
+COPCMD:	;copy zstring from (HL) to (DE)
+	PUSH	BC
+	PUSH	AF
+	XOR	A
+COPCMR:	LDI			;copy
+	CP	(HL)
+	JR	NZ,COPCMR	;continue
+	LD	(DE),A		;terminate
+	POP	AF
+	POP	BC
+	RET
+	;pending message to CON: and log
+MSGOUT:	PUSH	HL
+	PUSH	DE
+	LD	HL,F_STAT
+	BIT	7,(HL)
+	RES	7,(HL)		;quit 
+	LD	DE,(TXTOUT)	;PTR
+	CALL	NZ,LZKOUT	;message
+	CALL	NZ,LNEWLN	;+NL
+	POP	DE
+	POP	HL
+	RET
+	;activate out message
+ACTOUT:	PUSH	HL
+	LD	(TXTOUT),DE	;load MSG PTR
+	LD	HL,F_STAT
+	SET	7,(HL)
+	POP	HL
+	SCF
+	RET
+LNVCLR:	;clear previous line
+	LD	A,LNUP
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	LD	A,CLLN
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	RET
+	;CR+LF Mem (DE)
+MNEWLN:	PUSH	AF
+	LD	A,CR
+	LD	(DE),A
+	INC	DE
+	LD	A,LF
+	LD	(DE),A
+	INC	DE
+	XOR	A
+	LD	(DE),A		;terminate always
+	POP	AF
+	RET
+MWFNFT:	;FN.FT (DE) -> Mem (HL)
+	LD	B,13
+	LD	A,' '		;clear max. 'FN.FT '
+	CALL	FILLB##
+	CALL	MFN2##		;write FN.FT
+	CALL	SKNSP##
+	INC	HL
+	EX	DE,HL
+	RET
+	;CR+LF -> logfile and CON:
+LNEWLN:	PUSH	AF
+	PUSH	DE
+	LD	DE,LOGCTL
+	CALL	WLOGNL		;log NL
+	CALL	NEWLN		;out NL
+	POP	DE
+	POP	AF
+	RET
+	;(DE)-string+0 -> logfile and CON:
+LZKOUT:	PUSH	AF
+	PUSH	HL
+	LD	H,D
+	LD	L,E
+	LD	DE,LOGCTL
+LZKOU1:	LD	A,(HL)
+	INC	HL
+	AND	A
+	JR	Z,LZKOU3
+	CP	CR
+	JR	Z,LZKOU2
+	CP	LF
+	JR	Z,LZKOU2
+	CALL	ISPRINT##	;20H-7EH?
+LZKOU2:	CALL	Z,WRLOGB	;yes->log
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	LZKOU1
+LZKOU3:	LD	D,H
+	LD	E,L
+	POP	HL
+	POP	AF
+	RET
+LOGDIR:	;DIR entry (HL) -> logfile (A=entry counter)
+	PUSH	BC
+	LD	C,A
+	LD	DE,LOGCTL
+LOGDIG:	LD	B,16
+LOGDIT:	LD	A,(HL)
+	INC	HL
+	AND	A
+	JR	NZ,LOGDIP
+	DEC	HL
+	LD	A,' '
+LOGDIP:	CALL	WRLOGB		;write
+	DJNZ	LOGDIT
+	LD	A,C
+	AND	3
+	CALL	Z,WLOGNL	;all 4 entries
+	LD	A,C
+	POP	BC
+	RET
+WLOGNL:	;log NL
+	LD	A,CR
+	CALL	WRLOGB
+	LD	A,LF
+	;
+WRLOGB:	;write byte into logfile (DE)
+	BIT	7,(IY+4)
+	RET	Z		;OFF
+	PUSH	AF
+	PUSH	BC
+	LD	BC,(LOG_DU)
+	CALL	LOGTST
+	CALL	_FY$PUT
+	JR	NZ,WRLOGO	;Ok
+	CALL	_FYO$CLOSE
+	RES	7,(IY+4)
+	CALL	NEWLN
+	LD	DE,XE_LWEX	;ERR
+	CALL	ZKOUT
+	CALL	NEWLN
+WRLOGO:	LD	BC,(CUR_DU)
+	CALL	LOGTST
+	POP	BC
+	POP	AF
+	RET
+LOGFCL:	;close Log file
+	LD	BC,(LOG_DU)
+	CALL	LOGTST
+	LD	DE,LOGCTL
+	CALL	_FYO$CLOSE
+	LD	BC,(CUR_DU)
+	CALL	LOGTST
+	RES	7,(IY+4)	;logging OFF
+	RET
+ZSCMDO:	;16 byte Zstring (DE) to CON Out
+	PUSH	AF
+	PUSH	BC
+	LD	B,16
+ZSCMDT:	LD	A,(DE)
+	INC	DE
+	AND	A
+	JR	NZ,ZSCMDP
+	DEC	DE
+	LD	A,' '
+ZSCMDP:	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+;	CALL	COUT##		;command
+	DJNZ	ZSCMDT
+	POP	BC
+	POP	AF
+	RET
+CHELPO:	;command string+help to CON Out
+	PUSH	AF
+	PUSH	DE
+	LD	DE,(TARG7)
+	CALL	ZSCMDO		;command
+	LD	DE,(TARG9)
+	CALL	ZKOUT		;help
+	CALL	NEWLN
+	POP	DE
+	POP	AF
+	RET
+CHELPU:	;show upto 15 commands
+	LD	HL,(CONTMP)
+	LD	BC,(CONTMP+2)	;load
+	LD	A,CLS
+	BIT	6,(IY+4)	;script active?
+	CALL	Z,COUT##	;no
+	LD	E,15
+CHELPN:	PUSH	DE
+	LD	A,'@'
+	LD	DE,CMNULL	;find all commands!
+	CALL	ZSTRFD		;search command
+	POP	DE
+	JR	C,CHELPC	;search range scanned
+	CALL	CHELPO
+	DEC	E
+	JR	NZ,CHELPN	;next command
+CHELPC:	LD	(CONTMP),HL
+	LD	(CONTMP+2),BC	;save
+	RET
+LOGTST:	;login DU: <> (BC)
+	PUSH	HL
+	PUSH	BC
+	CALL	_RETUD
+	LD	H,B
+	LD	L,C
+	POP	BC
+	OR	A
+	SBC	HL,BC
+	CALL	NZ,_LOGUD
+	POP	HL
+	RET
+_OPENT:	PUSH	AF
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	LD	A,(EXTVER)
+	OR	A
+	LD	DE,(EXTCFG)
+	RES	0,E		;PUBLIC=off
+	LD	C,STCFLG
+	CALL	NZ,BDOS
+	JR	_OPENP
+_OPENR:	PUSH	AF
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	LD	A,(EXTVER)
+	OR	A
+	LD	DE,(EXTCFG)	;PUBLIC=old
+	LD	C,STCFLG
+	CALL	NZ,BDOS
+_OPENP:	POP	HL
+	POP	DE
+	POP	BC
+	POP	AF
+	RET
+_GETUD:	 ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	GETUD##
+	JR	_FDSKP
+_RETUD:	 ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	RETUD##
+	JR	_FDSKP
+_LOGUD:	 ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	LOGUD##
+	JR	_FDSKP
+_F$OPENT: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	_OPENT		;Public off
+	CALL	F$OPEN##
+	CALL	_OPENR		;Public old
+	PUSH	AF
+	CALL	F$CLOSE##
+	POP	AF
+	JR	_FDSKP
+_FYI$OPEN: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	FYI$OPEN##
+	JR	_FDSKP
+_FYO$OPEN: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	_OPENT		;Public off
+	CALL	FYO$OPEN##
+	CALL	_OPENR		;Public old
+	JR	_FDSKP
+_FY$GET: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	FY$GET##
+	JR	_FDSKP
+_FY$UNGET: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	FY$UNGET##
+	JR	_FDSKP
+_FY$PUT: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	FY$PUT##
+	JR	_FDSKP
+_FYI$CLOSE: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	FYI$CLOSE##
+	JR	_FDSKP
+_FYO$CLOSE: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	FYO$CLOSE##
+_FDSKP:	POP	IY
+	POP	IX
+	RET
+_INITFCB: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	INITFCB##
+	JR	_FDSKP
+_F$SCFA: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	SCFA##
+	JR	_FDSKP
+_F$RENAME: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	F$RENAME##
+	JR	_FDSKP
+_F$DELETE: ;preserve IY,IX
+	PUSH	IX
+	PUSH	IY
+	CALL	F$DELETE##
+	JR	_FDSKP
+TSWARG:	;test Switch ARG
+	LD	HL,(TARG1)
+	BIT	2,(IY+1)	;ARG?
+	JR	NZ,TSWAR1	;yes
+	LD	A,B
+	XOR	C		;toggle
+	RET
+TSWAR1:	PUSH	BC
+	PUSH	DE
+	LD	DE,S_ON
+	LD	BC,3
+	CALL	CMPXBT
+	POP	DE
+	POP	BC
+	JR	NZ,TSWAR2
+	LD	A,B
+	OR	C		;ON
+	RET
+TSWAR2:	PUSH	BC
+	PUSH	DE
+	LD	DE,S_OFF
+	LD	BC,4
+	CALL	CMPXBT
+	POP	DE
+	POP	BC
+	JR	NZ,TSWAR3
+	LD	A,C
+	CPL
+	AND	B		;OFF
+	RET
+TSWAR3:	LD	DE,F_CMXP	;'invalid ARG'
+	JP	ACTOUT
+	;Test local FN-ARG and copy to PGSSTR
+	;PI:   HL - address of filename
+	;PO:   DE - address OUT message
+	;    CY=1 - ERR in filename (length, illegal char's)
+	;	    and OUT message activated
+	;  CY+Z=0 - ambiguous filename
+TCLFNM:	LD	DE,PGSSTR
+	;entry for DIR
+TCLDNM:	LD	HL,(TARG1)	;ARG source address
+TSTDNM:	CALL	GETSPC		;FN.FT to 8.3+0 string
+	LD	DE,XE_ILFN
+	JP	C,ACTOUT	;ERR CHR in Input
+	XOR	A
+	CP	(HL)		;last CHR+1 <> 0
+	JP	NZ,ACTOUT	;too much CHR's or SPC in FN
+	OR	C		;CY=0 and Z=0/1
+	RET
+	;get 'spec'-string from Input or local DIR
+	;PI:   HL - PTR to Input or DIR entry
+	;      DE - PTR to 'spec'-string
+	;PO: CY=1 - ERR-CHR in Input
+	;   C > 0 - ? or * in Input
+GETSPC:	;clear all
+	PUSH	DE
+	EX	DE,HL
+	LD	B,8		;F
+GETSP1:	LD	(HL),' '
+	INC	HL
+	DJNZ	GETSP1
+	LD	(HL),'.'
+	INC	HL
+	LD	B,3		;T
+GETSP2:	LD	(HL),' '
+	INC	HL
+	DJNZ	GETSP2
+	LD	(HL),0		;delimiter
+	EX	DE,HL
+	POP	DE
+	;expand Input: .,:;=%|/\<>()[]{} not allowed
+	LD	C,0		;Counter for '?' 
+	LD	B,8		;F max. 8 Chr
+	PUSH	DE
+GETSP3:	LD	A,(HL)
+	CP	' '+1
+	JR	NC,GETSP4
+	;Input ready (toggle CY!)
+GETSER:	POP	DE
+	CCF
+	RET
+GETSP4:	INC	HL
+	CP	'.'
+	JR	Z,GETSP8	;cont. with T
+	CALL	CPERRC		;(CY=0!)
+	JR	Z,GETSER	;ERR not allowed CHR
+	CP	'?'
+	JR	NZ,GETSP5
+	INC	C
+GETSP5:	CP	'*'
+	JR	Z,GETSP6	;-> '?'
+	CALL	CAPS##
+	LD	(DE),A
+	INC	DE
+	DJNZ	GETSP3
+	JR	GETSP7		;F ready
+GETSP6:	CALL	GETS11
+GETSP7:	LD	A,(HL)
+	CP	'.'
+	JR	NZ,GETSP8
+	INC	HL		;skip '.'
+GETSP8:	POP	DE
+	EX	DE,HL
+	LD	A,C
+	LD	BC,8+1		;F+'.'
+	ADD	HL,BC
+	LD	C,A
+	EX	DE,HL
+	LD	B,3		;T max. 3 Chr
+GETSP9:	LD	A,(HL)
+	CP	' '+1
+	CCF
+	RET	NC		;Input ready
+	INC	HL
+	CALL	CPERRC
+	CCF			;set CY!
+	RET	Z		;ERR not allowed CHR
+	CP	'?'
+	JR	NZ,GETS10
+	INC	C
+GETS10:	CP	'*'
+	JR	Z,GETS11	;-> '?'
+	CALL	CAPS##
+	LD	(DE),A
+	INC	DE
+	DJNZ	GETSP9
+	OR	A
+	RET
+GETS11:	LD	A,'?'		;fill with '?'
+	LD	(DE),A
+	INC	DE
+	INC	C
+	DJNZ	GETS11
+	OR	A
+	RET
+	;FN without Folder -> HL
+TFOLDR:	LD	D,H		;first char
+	LD	E,L
+	XOR	A
+TFOLD1:	INC	HL
+	CP	(HL)
+	JR	NZ,TFOLD1	;search string-end
+TFOLD2:	DEC	HL		;current char backward
+	LD	A,(HL)
+	INC	HL		;current FN
+	CP	'/'
+	JR	Z,TNARGC
+	CP	'\'
+	JR	Z,TNARGC
+	DEC	HL
+	PUSH	HL
+	OR	A
+	SBC	HL,DE
+	POP	HL
+	JR	NZ,TFOLD2	;upto first char
+	RET
+TNARGI:	;test "empty" ARG Input: CY=1
+	LD	HL,(TARG1)	;ARG source address
+TNARGC:	XOR	A
+	OR	(HL)		;NULL not allowed
+	SCF
+	RET	Z
+	CP	' '		;SPC not allowed
+	SCF
+	RET	Z
+	CCF
+	RET
+	;compare not allowed local CHR's
+ERRCHR:	DB	'.,:;=%|/\<>()[]{}'
+ERRCLG	EQU	$-ERRCHR
+CPERRC:	PUSH	HL
+	PUSH	BC
+	LD	HL,ERRCHR
+	LD	BC,ERRCLG
+	CPIR
+	SCF
+	CCF			;CY=0!
+	POP	BC
+	POP	HL
+	RET
+	;Read local DIR from 'spec' to (F_VBUF)
+	;PE: (TARG1) - 'spec' address (ARG)
+	;PA:	CY=1 - ERR with activated message
+	;	  HL = Points to first 16-byte Buffer Entry
+	;	  BC = Number of selected files
+RDLDIR:	LD	HL,ALFSTR	;all files string
+	BIT	2,(IY+1)
+	JR	Z,RDLDIA	;no ARG found
+RDMDIR:	LD	DE,SPCSTR
+	CALL	TCLDNM		;test and load SPCSTR
+	RET	C		;ERR length, illegal char's
+	LD	HL,SPCSTR
+RDLDIA:	LD	DE,DIRFCB	;LDIR FCB
+	CALL	CSHFCB		;copy to short FCB
+	LD	HL,(F_VBUF)
+	LD	A,10000000B	;Non-System files
+	BIT	2,(IY+3)
+	JR	Z,RDLDIS	;FSYS OFF
+	SET	6,A
+RDLDIS:	PUSH	IX
+	PUSH	IY
+	CALL	DIRQ##
+	POP	IY
+	POP	IX
+	OR	A		;test TPA Overflow and reset CY
+	LD	DE,F_CMXO	;'TPA-Overflow'
+	CALL	Z,ACTOUT	;returns with CY=1!
+	RET
+	;Print '# ( of # )file(s)' (BC)/(DE)
+DRFILO:	PUSH	HL
+	LD	H,B
+	LD	L,C
+	LD	B,D
+	LD	C,E
+	LD	DE,(F_LBUF)
+	PUSH	DE
+	PUSH	HL		;=BC
+	CALL	MHLFDC##	;#
+	LD	A,B
+	OR	C
+	JR	Z,DRFINO	;NO 'all files'
+	LD	HL,F_CMX1
+	CALL	COPCMD		;' of '
+	LD	H,B
+	LD	L,C
+	CALL	MHLFDC##	;#
+DRFINO:	LD	HL,F_CMXY
+	CALL	COPCMD		;' file(s)'
+	POP	BC
+	LD	A,B
+	OR	C		;CY=0!
+	CALL	Z,MNEWLN	;NL
+	POP	DE
+	CALL	LZKOUT
+	POP	HL
+	RET	NZ
+	SCF			;no 'files'
+	RET
+PUDPTR:	;Push up DIR-PTR
+	PUSH	HL
+	PUSH	BC
+	LD	D,B
+	LD	E,C
+	LD	B,H
+	LD	C,L
+	LD	HL,16
+	CALL	MULHD##
+	ADD	HL,BC
+	LD	(F_VBUF),HL	;new DIR PTR
+	POP	BC
+	POP	HL
+	RET
+	;init Dsocket-FCB with PGSSTR
+	;PA: DE - address of FIOFCB
+	;    BC - address of FIOCTL
+DSFCBI:	LD	HL,(FDSBUF)	;Dsocket structure
+	LD	DE,FIOCTL
+	ADD	HL,DE
+	LD	B,H
+	LD	C,L
+	LD	(HL),F_FSIZ/128	;load pages
+	LD	DE,8
+	ADD	HL,DE
+	LD	DE,(F_FBUF)
+	LD	(HL),E
+	INC	HL
+	LD	(HL),D		;load work buffer
+	INC	HL
+	EX	DE,HL		;DE=FIOFCB
+	LD	HL,PGSSTR	;copy to Dsocket-FCB
+	;
+CSPFCB:	;init FCB
+	CALL	_INITFCB	;reset FCB
+CSHFCB:	;copy F(8).N(3)-Zstring to FCB-Name
+	PUSH	BC
+	PUSH	DE
+	XOR	A
+	LD	(DE),A		;current drive
+	INC	DE
+	LD	BC,8
+	LDIR			;FN
+	INC	HL		;skip '.'
+	LD	A,(HL)
+	CP	' '		;FT? no->Z=1
+	PUSH	DE
+	LD	BC,3
+	LDIR			;FT
+	POP	HL
+	POP	DE
+	POP	BC
+	RET
+TESTDU:	;test leading NDIR|D|U:
+	LD	BC,(CUR_DU)	;current DU:
+	LD	E,L
+	LD	D,H		;retain HL !
+TSTDU1:	LD	A,(DE)
+	INC	DE
+	AND	07FH
+	CP	':'
+	JR	Z,TSTDU2	;-> do test
+	OR	A		;string end ?
+	RET	Z		;yes
+	JR	TSTDU1		;search ':'
+TSTDU2:	;test standalone NDIR|D|U[:]
+	CALL	TSTDIR		;NDIR[:]
+	JR	NC,TSTDU3
+	LD	BC,(CUR_DU)	;current DU:
+	CALL	TSTDRU		;D|U[:]
+	LD	DE,XE_ILDU	;'invalid DIR|DU:'
+	JP	C,ACTOUT	;activate Err-Msg->Ret
+TSTDU3:	INC	HL		;skip ':'
+	RET
+	;test named DIR's
+TSTNDR:	LD	DE,(Z3EPTR)
+	LD	A,D
+	OR	E
+	SCF
+	RET	Z		;no ZCPR
+	PUSH	HL		;save PTR
+	LD	HL,21
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)		;address of first NDIR
+	INC	HL
+	XOR	A
+	OR	(HL)		;load and test counter
+	POP	HL		;restore PTR
+	RET	NZ		;>0
+	CCF			;=0
+	RET
+	;NDIR[:] -> DU: (BC) and inc. PTR (HL)
+	;PO if CY=0 : BC - Drive and User 
+	;	      HL - behind last char
+TSTDIR:	CALL	TSTNDR
+	RET	C
+	PUSH	HL		;save PTR
+	LD	B,A
+TSTDI1:	LD	A,(DE)		;NDIR
+	OR	A
+	JR	Z,TDUERR	;no more entries
+	PUSH	BC
+	LD	B,A		;Drive
+	DEC	B		;0... for LOGUD## !
+	INC	DE
+	LD	A,(DE)
+	LD	C,A		;User
+	INC	DE
+	PUSH	HL		;DIR
+	PUSH	DE		;NDIR
+	PUSH	BC		;save DU:
+	LD	B,8
+TSTDI2:	LD	A,(DE)
+	CP	' '
+	JR	Z,TSTDI3	;end of NDIR
+	LD	C,A
+	LD	A,(HL)
+	CALL	CAPS##		;ucase
+	CP	C
+	JR	NZ,TSTDI4 	;DIR<>NDIR
+	INC	HL
+	INC	DE
+	DJNZ	TSTDI2
+TSTDI3:	CALL	TDUEND		;end of DIR ?
+TSTDI4:	POP	BC
+	POP	DE
+	JR	NZ,TSTDI5
+	;DIR=NDIR
+	POP	DE		;retain HL = end of DIR !
+	POP	DE		;retain BC = new DU !
+	JR	TDUSOK
+TSTDI5:	POP	HL
+	EX	DE,HL
+	LD	BC,16
+	ADD	HL,BC
+	EX	DE,HL		;DE=next NDIR
+	POP	BC
+	DJNZ	TSTDI1
+	JR	TDUERR		;no more entries
+	;D|U[:] -> BC and inc. PTR (HL)
+	;PO if CY=0 : BC - Drive and User 
+	;	      HL - behind last char
+TSTDRU:	PUSH	HL
+	LD	A,(HL)
+	CALL	ISALPHA##
+	JR	Z,TDDRIV	;A-Z
+	CALL	ISDIGIT##
+	JR	Z,TDUSER	;0-9
+TDUERR:	POP	HL		;reset HL !
+	SCF
+	RET
+TDUEND:	LD	A,(HL)
+	OR	A
+	RET	Z
+	CP	':'
+	RET
+TDDRIV:	AND	05FH		;UCASE
+	SUB	'A'		;new Drive
+	CP	'P'-'A'+1
+	JR	NC,TDUERR
+	LD	B,A
+	INC	HL
+	CALL	TDUEND
+	JR	Z,TDUSOK
+	CALL	ISDIGIT##
+	JR	NZ,TDUERR
+TDUSER:	CALL	EVAL10##	;new USER
+	CALL	TDUEND
+	JR	NZ,TDUERR
+	LD	A,E
+	CP	32
+	JR	NC,TDUERR
+	LD	C,A
+	CCF			;CY=0!
+TDUSOK:	POP	DE		;retain HL !
+	RET
+LOADST:	;load standard FT
+	EX	DE,HL
+	PUSH	BC
+	LD	BC,3
+	LDIR
+	POP	BC
+	RET
+FCBNCP:	;copy local FCB FN/FT wo SPC's
+	LD	A,(HL)
+	AND	7FH
+	CP	' '
+	JR	Z,FCBNCS
+	LD	(DE),A
+	INC	DE
+FCBNCS:	INC	HL
+	DJNZ	FCBNCP
+	RET
+MFPCMD:	;make put-file commands
+	LD	DE,F_PCMD
+	PUSH	DE
+	CALL	BCOPY4
+	POP	HL
+	RET
+WCNMSG:	;'connected' MSG -> Mem (DE)
+	BIT	7,(IX+F_SOST)	;Csocket online?
+	LD	HL,F_CMXH	;'connection closed'
+	CALL	Z,COPCMD
+	JR	Z,WCNMSE
+	LD	HL,F_CMXG	;'Connected to ...'
+	CALL	COPCMD
+	LD	HL,(FCSBUF)	;Csocket!
+	PUSH	HL
+	LD	BC,F_NAME
+	ADD	HL,BC
+	CALL	COPCMD
+	LD	A,' '
+	LD	(DE),A
+	INC	DE
+	LD	A,'['
+	LD	(DE),A
+	INC	DE
+	POP	HL
+	INC	HL
+	INC	HL		;=Server IP
+	CALL	I_NTOA		;write
+	EX	DE,HL
+	CALL	SKNSP##
+	EX	DE,HL
+	LD	A,':'
+	LD	(DE),A
+	INC	DE
+	LD	BC,4
+	ADD	HL,BC		;=Server Port
+	LD	A,(HL)
+	INC	HL
+	LD	L,(HL)		;NOrder!
+	LD	H,A
+	CALL	MHLFDC##	;write
+	LD	A,']'
+	LD	(DE),A
+	INC	DE
+WCNMSE:	CALL	MNEWLN
+	RET
+WLHMDU:	;HOME DU: -> Mem (DE)
+	LD	HL,S_HMDU
+	CALL	COPCMD
+	CALL	_GETUD		;restore
+	CALL	_RETUD		;get
+	EX	DE,HL
+	LD	D,B
+	LD	E,C
+	CALL	WRCDIR
+	EX	DE,HL
+	INC	DE
+	LD	BC,(CUR_DU)	;-> current
+	CALL	_LOGUD
+	JR	WCNMSE
+WLGFST:	;Log file state -> Mem (DE)
+	LD	HL,S_LOGF
+	CALL	COPMSG		;init DE/CY=0!
+	BIT	7,(IY+4)	;logfile?
+	JP	Z,SONOFF	;-> OFF
+WLGFNM:	LD	HL,(LOG_DU)	;log DU:
+	EX	DE,HL
+	CALL	WRCDIR
+	INC	HL
+	LD	DE,LOGFCB+1
+	CALL	MFN2##		;write FN.FT into memory
+	CALL	SKNSP##
+	LD	(HL),0		;terminate
+	RET
+	;write 'DU/DIR:' in memory (min. buffer=14 byte)
+	;PI: DE - DU:
+	;    HL - address
+	;PO: HL - address of last char (:)
+WRCDIR:	LD	B,14		;max. length + 1
+	XOR	A		;clear and terminate
+	CALL	FILLB##
+	LD	A,D
+	ADD	A,'A'
+	LD	(HL),A		;write D
+	INC	HL
+	LD	A,E
+	EX	DE,HL
+	CALL	MAFDC##		;write U
+	EX	DE,HL
+	LD	A,':'
+	LD	(HL),A		;write
+	LD	B,D
+	LD	C,E
+	CALL	TSTNDR		;DE: first NDIR
+	RET	C
+	LD	(ARGN),A	;entries
+	INC	B		;D->1..16
+WRCDI1:	LD	A,(DE)
+	INC	DE
+	CP	B		;D=?
+	JR	NZ,WRCDI3
+	LD	A,(DE)
+	CP	C		;U=?
+	JR	NZ,WRCDI3
+	INC	DE
+	LD	A,'/'
+	LD	B,9		;max. length+1
+WRCDI2:	LD	(HL),A		;write char
+	INC	HL
+	LD	A,(DE)		;name char
+	INC	DE
+	CP	' '
+	JR	Z,WRCDI4	;name end
+	DJNZ	WRCDI2
+	JR	WRCDI4
+WRCDI3:	PUSH	HL
+	LD	HL,17
+	ADD	HL,DE
+	EX	DE,HL		;DE=next NDIR
+	POP	HL
+	LD	A,(ARGN)
+	DEC	A
+	LD	(ARGN),A
+	JR	NZ,WRCDI1	;continue
+WRCDI4:	LD	(HL),':'
+	RET
+	;compare ucased (HL) with (DE)
+CMP5BT:	LD	BC,5
+CMPXBT:	PUSH	HL
+	EX	DE,HL
+CMPUBT:	LD	A,(DE)
+	CALL	CAPS##
+	INC	DE
+	CPI
+	JR	NZ,CMPUBE
+	JP	PE,CMPUBT
+CMPUBE:	POP	HL
+	RET			;Z=1 same
+	;compare A-(HL) 4 Byte
+CPA4BT:	LD	BC,4
+CPABTL:	CPI
+	RET	NZ
+	JP	PE,CPABTL
+	RET			;Z=1 same
+	;count & get ARG-PTR
+CNTARG:	LD	HL,ARGN
+	DEC	(HL)
+	RET	Z
+GETARG:	;get+next ARG
+	LD	HL,(TEMP)
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	INC	HL
+	LD	(TEMP),HL	;save next ARG-PTR
+	EX	DE,HL		;HL: address ARG
+	RET
+	;Online-Test with OUT message to CON
+	;PO:	CY=1 offline & DE=OUT message
+ONTEST:	CALL	N_LSTA		;LINK STATE
+	XOR	A
+	OR	E		;OK?
+	LD	DE,NONTXT
+	JR	NETTSE
+NONTXT:	DB	'Network-cable not connected !',BEEP,0
+	;Network-Test with OUT message to CON
+	;PO:	CY=1 offline & DE=OUT message
+NETTST:	LD	HL,TEMP		;local network
+	PUSH	HL
+	CALL	N_GLIP		;read IP
+	CALL	N_GLMA		;read MASK
+	XOR	A
+	LD	DE,NKNTXT
+	POP	HL
+	CALL	CPA4BT		;IP 4*000 ?
+	JR	Z,NETTSE	;not conf.
+	CALL	CPA4BT		;SNM 4*000 ?
+NETTSE:	SCF			;Error
+	RET	Z		;not conf./offline
+	CCF			;OK
+	RET
+NKNTXT:	DB	'Network not configured !',BEEP,0
+;### Network SUB-programs ##############################
+	;- resolve server ZString (name|IP-string[:port])
+	;- copy valid IP address to F_PEER
+	;- copy valid Port to F_PORT
+	;PE:   HL - address of server ZString
+	;PA: CY=1 - ERR and activated MSG
+MKHOST:	PUSH	HL
+MKPOR1:	LD	A,(HL)
+	CP	':'		;find PORT
+	JR	Z,MKPOR2
+	OR	A
+	JR	Z,MKPOR3	;not found (CY=0!)
+	INC	HL
+	JR	MKPOR1
+MKPOR2:	LD	(HL),0		;clear ':'!
+	INC	HL
+	CALL	ATOI		;(HL)STRING->DE=PORT#
+	LD	(TEMP+2),DE
+	LD	HL,TEMP+2
+	LD	DE,F_PORT
+	CALL	NC,HTONS	;ATOI=OK: conv.+copy
+MKPOR3:	POP	HL
+	LD	DE,DNSSYE	;'Syntax Error'
+	JR	C,MKHOS3	;Err
+	LD	A,(HL)
+	OR	A
+	JR	Z,MKHOS3	;no server from input
+	CP	'0'
+	JR	C,MKHOS1	;<0 no Digit
+	CP	'9'+1
+	JR	NC,MKHOS1	;>9 no Digit
+	;try to convert num. IP from digit(s)
+	EX	DE,HL
+	LD	HL,F_PEER
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	RET	NC		;if successful -> OK
+	EX	DE,HL
+MKHOS1:	;copy name to (DMNBUF)
+	LD	DE,(F_CBUF)	;for DMN
+	PUSH	DE
+	CALL	COPYNM		;copy
+	;resolve name
+	POP	DE
+	LD	HL,(F_DBUF)	;PTR to local MSG buffer
+	CALL	GHBNAM		;query:(DE)Name->(DE)IP
+	EX	DE,HL		;HL: numerical IP
+	JR	NC,MKHOS4	;OK: copy IP
+	;A=ERR# from resolver
+	LD	DE,DNSSEU	;Name error
+	CP	3
+	JR	Z,MKHOS3
+	LD	HL,DNSQSE	;Server error
+	LD	DE,DNSQSN
+	CP	16
+	JR	C,MKHOS2
+	LD	HL,DNSQCE	;Client error
+	LD	DE,DNSQCN
+MKHOS2:	CALL	MAFDC##		;write ERR-number
+	EX	DE,HL
+MKHOS3:	CALL	ACTOUT
+	RET			;CY=1!
+MKHOS4:	LD	DE,F_PEER	;copy num. IP to HOSTIP
+BCOPY4:	LD	BC,4
+	LDIR
+	RET			;CY=0!
+	;copy domain ZString (HL) -> (DE)
+COPYNM:	LD	B,255		;max. length
+	PUSH	AF
+	XOR	A
+COPYNR:	PUSH	BC
+	LDI			;copy
+	POP	BC
+	CP	(HL)
+	JR	Z,COPYNE	;destination string end
+	DJNZ	COPYNR
+COPYNE:	LD	(DE),A		;write 0-Byte
+	INC	DE		;EA+1
+	POP	AF
+	RET
+	;DS read/write
+	;PI:  DMA - standard address at 80H
+	;      DE - pointer to FCB (reset'ed, user set already)
+	;      HL - pointer to 15-byte buffer for/with DS data
+	;PO:   A <> 0 Zero Flag Clear (NZ) if successful
+	;       A = 0, Zero Flag Set (Z) if error
+	;AR:	AF,BC,HL
+RDSTAMP: ;read DS (preserve IY,IX!)
+	PUSH	IX
+	PUSH	IY
+	PUSH	DE
+	PUSH	HL
+	LD	C,GETDTS
+	CALL	BDOS
+	INC	A		;set A and Z
+	POP	HL
+	SCF
+	CALL	NZ,DSCOPY	;DMA->HL
+	JR	RWDSEN
+WRSTAMP: ;write DS (preserve IY,IX!)
+	PUSH	IX
+	PUSH	IY
+	PUSH	DE
+	OR	A
+	CALL	DSCOPY		;HL->DMA
+	LD	C,SETDTS
+	CALL	BDOS
+	INC	A		;set A and Z
+RWDSEN:	POP	DE
+	POP	IY
+	POP	IX
+	RET
+DSCOPY:	PUSH	DE
+	LD	DE,DMA
+	JR	NC,DSCOP1
+	EX	DE,HL
+DSCOP1:	LD	BC,15
+	LDIR
+	POP	DE
+	RET
+DSMCLR:	;clear DS data buffer
+	PUSH	HL
+	PUSH	DE
+	PUSH	BC
+	LD	HL,TEMP
+	LD	BC,15
+	CALL	CLRMEM
+	POP	BC
+	POP	DE
+	POP	HL
+	RET
+DSTEST:	;test DS data
+	LD	HL,TEMP+11
+	LD	A,(HL)
+	OR	A
+	RET	NZ		;valid month Modify
+	LD	HL,TEMP+1
+	LD	A,(HL)
+	OR	A
+	SCF
+	RET	Z		;invalid month Create
+	CCF
+	RET
+AS2BCD:	;DS: ASCII YYYYMMDDhhmmss (HL) -> BCD YY MM DD hh mm (DE)
+	INC	HL
+	LD	B,5
+AS2BCW:	LD	C,2
+AS2BCB:	INC	HL
+	LD	A,(HL)
+	SUB	'0'
+	EX	DE,HL
+	RLD
+	EX	DE,HL
+	DEC	C
+	JR	NZ,AS2BCB
+	INC	DE
+	DJNZ	AS2BCW
+	RET
+BCD2AS:	;DS: BCD YY MM DD hh mm (HL) -> ASCII YYYYMMDDhhmmss + ' ' (DE)
+	LD	A,(HL)
+	CP	78H
+	LD	A,19H
+	ADC	A,0
+	DAA			;19/20 (BCD)
+	CALL	WRCENT		;write century YY
+	XOR	A		;clear!
+	LD	B,5
+BCD2AW:	LD	C,2
+BCD2AB:	RLD
+	PUSH	AF
+	ADD	A,'0'
+	LD	(DE),A		;YY/MM/DD/hh/mm
+	INC	DE
+	POP	AF
+	DEC	C
+	JR	NZ,BCD2AB
+	RLD
+	INC	HL
+	DJNZ	BCD2AW
+	LD	A,'0'
+	LD	(DE),A
+	INC	DE
+	LD	(DE),A		;ss
+	INC	DE
+	LD	A,' '
+	LD	(DE),A		;' '
+	INC	DE
+	RET
+WRCENT:	PUSH	AF
+	RRA
+	RRA
+	RRA
+	RRA
+	CALL	WRCEND
+	POP	AF
+WRCEND:	AND	0FH
+	ADD	A,'0'
+	LD	(DE),A
+	INC	DE
+	RET
+DATEMS:	;Write Date Message (YYYYMMDDhhmmss -> European format)
+	LD	HL,TEMP+10	;BCD Modified
+	LD	DE,(F_LBUF)	;save in ASCII
+	PUSH	DE
+	CALL	BCD2AS		;->write
+	LD	DE,F_CMX0	;Msg-string
+	CALL	ACTOUT		;activate message
+	LD	HL,6
+	ADD	HL,DE
+	LD	B,H
+	LD	C,L		;Msg-string + 6
+	POP	HL		;saved ASCII string
+	LD	DE,6
+	ADD	HL,DE
+	LD	A,'.'
+	CALL	CMDTMU		;day
+	LD	DE,-4
+	ADD	HL,DE
+	CALL	CMDTMU		;month
+	LD	DE,-6
+	ADD	HL,DE
+	XOR	A
+	CALL	CMDTMU
+	CALL	CMDTMU		;year
+	LD	A,' '
+	LD	(BC),A
+	INC	BC
+	LD	DE,4
+	ADD	HL,DE
+	LD	A,':'
+	CALL	CMDTMU		;hour
+	CALL	CMDTMU		;minute
+	XOR	A		;second
+CMDTMU:	PUSH	AF
+	LD	A,(HL)
+	INC	HL
+	LD	(BC),A
+	INC	BC
+	LD	A,(HL)
+	INC	HL
+	LD	(BC),A
+	INC	BC
+	POP	AF		;delimiter
+	OR	A
+	RET	Z
+	LD	(BC),A
+	INC	BC
+	RET
+SVTRSZ:	;save size in BC
+	LD	A,(IX+F_SIZE)
+	ADD	A,C
+	LD	(IX+F_SIZE),A
+	LD	A,(IX+F_SIZE+1)
+	ADC	A,B
+	LD	L,A
+	LD	(IX+F_SIZE+1),A
+	LD	A,(IX+F_SIZE+2)
+	ADC	A,0
+	LD	H,A
+	LD	(IX+F_SIZE+2),A
+	LD	A,(IX+F_SIZE+3)
+	ADC	A,0
+	LD	(IX+F_SIZE+3),A	;add (BC)
+	;AHL = F_SIZE/256
+	RRA
+	RR	H
+	RR	L
+	RRA
+	RR	H
+	RR	L		;HL=F_SIZE/1024
+	INC	HL		;round up
+	LD	(DSKTSZ),HL	;save for output
+	RET
+ASC_UP:	;'TYPE A' reply
+	CALL	CDVOUT		;info out
+	LD	HL,200		;"OK"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	SET	6,(IY)		;IMAGE ON
+	SCF			;ERR
+	RET	NZ
+	RES	6,(IY)		;ASCII ON
+	CCF
+	RET
+MCMRET:	;test M-command return
+	BIT	5,(IY+3)	;M-command ON?
+	JR	NZ,MCMJMP	;yes->jump
+	RES	2,(IY+2)	;reset abort request
+	RET
+MCMJMP:	LD	HL,(MCRETA)
+	JP	(HL)		;return to M-command
+	;prepare 'PORT'-command
+CMPORT:	DB	'PORT ',0
+PORTUP:	LD	HL,CMPORT
+	LD	DE,(F_CBUF)	;message buffer
+	CALL	COPCMD		;command
+	PUSH	DE
+	LD	HL,(FDSBUF)	;Dsocket
+	PUSH	HL
+	LD	DE,F_CLPT
+	ADD	HL,DE
+	EX	DE,HL
+	CALL	N_DPRT		;get new dyn. Port
+	EX	DE,HL
+	LD	(HL),E
+	INC	HL
+	LD	(HL),D		;load NOrder!
+	POP	HL
+	LD	DE,F_CLIP
+	ADD	HL,DE
+	PUSH	HL
+	CALL	N_GLIP		;load local IP
+	POP	DE		;IP in structure
+	POP	HL		;message buffer
+	LD	B,6		;6*dec.
+	JR	PORTU2
+PORTU1:	LD	(HL),','
+	INC	HL
+PORTU2:	LD	A,(DE)
+	INC	DE
+	PUSH	DE
+	LD	D,0
+	LD	E,A
+	CALL	ITOA		;conv. NUM
+	POP	DE
+	DJNZ	PORTU1
+	LD	(HL),0		;terminate message
+	OR	A
+	RET
+	;evaluate 'PASV'-reply
+CMPASV:	DB	'PASV',0
+PASVUP:	CALL	CDVOUT		;info out
+	LD	HL,227		;"Entering Passive Mode"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	SCF			;ERR
+	RET	NZ
+	LD	HL,(F_MBUF)	;Message buffer
+PASVPW:	LD	A,(HL)
+	INC	HL
+	CP	'('
+	JR	Z,PASVPP
+	CP	')'
+	JR	NZ,PASVPW
+PASVPE:	LD	DE,F_CMXV
+	JP	ACTOUT		;activate OUT message (CY=1!)
+PASVPP:	LD	B,4
+PASVPS:	CALL	ATOI		;conv. string
+	INC	HL
+	DJNZ	PASVPS		;skip IP
+	PUSH	HL
+	LD	IX,(FDSBUF)	;Dsocket
+	PUSH	IX
+	POP	HL
+	LD	DE,F_CLPT
+	ADD	HL,DE
+	EX	DE,HL		;DE=Client Port
+	POP	HL
+	LD	B,2		;2 NUM's
+	JR	PASVP2
+PASVP1:	LD	A,(HL)
+	INC	HL
+	CP	','
+	JR	NZ,PASVPE	;String-ERR
+PASVP2:	PUSH	DE
+	CALL	ATOI
+	INC	D
+	DEC	D
+	POP	DE
+	JR	C,PASVPE	;ATOI-ERR
+	JR	NZ,PASVPE	;>8Bit
+	LD	(DE),A		;load PASV Server Port
+	INC	DE
+	DJNZ	PASVP1
+	LD	IX,(FCSBUF)	;Csocket
+	PUSH	IX
+	POP	DE
+	LD	HL,F_SVIP
+	ADD	HL,DE
+	EX	DE,HL		;Server IP ...
+	LD	IX,(FDSBUF)	;Dsocket
+	PUSH	IX
+	POP	BC
+	LD	HL,F_CLIP	;in passive mode
+	ADD	HL,BC		;... to Client IP
+	EX	DE,HL
+	LD	BC,4
+	LDIR			;copy Server->Client
+	OR	A
+	RET
+	;open Dsocket
+DSCKOP:	LD	IX,(FDSBUF)	;Dsocket
+	PUSH	IX
+	POP	HL
+	LD	A,(IX)
+	BIT	4,(IY)
+	JR	Z,SOPACM	;Passive open OFF
+	;passive mode
+	LD	DE,F_CLIP
+	ADD	HL,DE		;Source IP
+	CALL	CONNECT		;passive=active connect
+	LD	DE,F_CMXU
+	JR	SOPTER
+SOPACM:	;active mode
+	LD	DE,F_CLPT
+	ADD	HL,DE
+	CALL	BIND		;Source PORT
+	LD	DE,F_CMXS
+	JR	C,SOPTER
+	CALL	LISTEN		;active=passive listen
+	LD	DE,F_CMXT
+SOPTER:	JP	C,ACTOUT	;activate OUT message (CY=1!)
+	SET	7,(IX+F_SOST)	;set online
+	RET
+SCCDAT:	;send Csocket data and activate wait
+	LD	HL,(F_CBUF)
+	LD	BC,F_CSIZ-2	;max.!
+	XOR	A		;find NULL
+	CPIR
+	INC	BC		;+2!
+	EX	DE,HL
+	LD	HL,F_CSIZ-2
+	SBC	HL,BC
+	EX	DE,HL		;DE = Msg-Size wo NL
+	DEC	HL		;overwrite NULL!
+	LD	(HL),CR
+	INC	DE
+	INC	HL
+	LD	(HL),LF		;terminate line
+	INC	DE
+	LD	B,D
+	LD	C,E		;BC = Msg-Size with NL
+	PUSH	IX
+	POP	HL
+	LD	DE,F_SHSZ
+	ADD	HL,DE
+	LD	(HL),C
+	INC	HL
+	LD	(HL),B		;save size
+	LD	HL,(F_CBUF)
+	LD	A,(IX)
+SCCDAW:	PUSH	BC		;SIZE TO SEND
+	CALL	SEND		;Send TCP-Data
+	POP	DE
+	RET	C		;ERR
+	EX	DE,HL
+	SBC	HL,BC
+	EX	DE,HL
+	LD	B,D
+	LD	C,E		;SIZE = SIZE - SENT
+	JR	NZ,SCCDAW
+SNDACT:	;activate Sent-Data
+	SET	6,(IX+F_SOST)	;wait ON
+SDTIME:	CALL	N_TIME
+	LD	(IX+F_LATS),L
+	LD	(IX+F_LATS+1),H	;save Timestamp
+	OR	A		;CY=0
+	RET
+	;Debug-Out Sent Command
+	;PI:  HL=address/BC=Size
+SNDDBG:	LD	A,(F_STAT)
+	BIT	5,A
+	RET	Z		;Debug OFF
+	LD	HL,(F_CBUF)
+	PUSH	HL
+	LD	DE,LCPASS
+	CALL	CMP5BT
+	JR	NZ,SNDDB1
+	LD	DE,5
+	ADD	HL,DE
+	LD	(HL),CR
+	INC	HL
+	LD	(HL),LF		;terminate line
+	LD	BC,7
+	JR	SNDDB2		;ignore PW
+SNDDB1:	PUSH	IX
+	POP	HL
+	LD	DE,F_SHSZ
+	ADD	HL,DE
+	LD	C,(HL)
+	INC	HL
+	LD	B,(HL)		;load size
+SNDDB2:	LD	DE,DBGPRM
+	CALL	LZKOUT
+	POP	HL
+	CALL	CDATAO		;Csocket data out
+	RET
+DBGPRM:	DB	'--> ',0
+	;receive and parse Csocket Data
+	;PO:  CY=0: Control-Message received
+RCCDAT:	BIT	5,(IY+2)	;multimessage?
+	JR	Z,RPLPRS	;no->skip
+	LD	HL,(FUMPTR)
+	LD	DE,(F_MBUF)
+	LD	BC,(FUMSIZ)
+	PUSH	BC
+	LDIR			;shift unparsed SIZE
+	POP	BC		;= current SIZE
+	RES	5,(IY+2)	;quit multimessage
+	JR	RPLPRI		;skip receiver
+RPLPRS:	LD	HL,(F_MBUF)	;control message buffer
+	LD	BC,0		;new response
+	BIT	6,(IY+2)	;incomplete response?
+	JR	Z,REMREN	;no->new response
+	PUSH	IX
+	POP	HL
+	LD	DE,F_RHSZ
+	ADD	HL,DE
+	LD	C,(HL)
+	INC	HL
+	LD	B,(HL)		;current SIZE
+	LD	HL,(F_MBUF)
+	ADD	HL,BC		;maintain current response
+REMREN:	PUSH	BC		;save current SIZE
+	PUSH	HL
+	LD	HL,F_MSIZ-1
+	OR	A
+	SBC	HL,BC
+	LD	B,H
+	LD	C,L		;max. Size to receive
+	POP	HL		;Haddress of message data
+	LD	A,(IX)
+	CALL	RECV		;Recv TCP-Data
+	LD	(HL),0		;terminate response!
+	POP	HL		;current SIZE
+	ADD	HL,BC		;+ received Size
+	LD	B,H
+	LD	C,L		;= current SIZE
+RPLPRI:	PUSH	IX
+	POP	HL
+	LD	DE,F_RHSZ
+	ADD	HL,DE
+	LD	(HL),C
+	INC	HL
+	LD	(HL),B		;save current SIZE
+	LD	HL,(F_MBUF)	;Message buffer
+	;parse response from server (BC=SIZE)
+RPLPRZ:	RES	4,(IY+2)	;Reply-Code OFF
+	LD	A,(HL)		;first char?
+	CP	'1'
+	JR	C,RPLPR1	;<1->skip line
+	CP	'6'+1
+	JR	NC,RPLPR1	;>6->skip line
+	PUSH	HL
+	CALL	ATOI
+	LD	(RPLYCD),DE	;save Reply-Code
+	LD	A,(HL)
+	LD	(RPLYCH),A	;save multi-line character
+	SET	4,(IY+2)	;Reply-Code ON
+	POP	HL
+	LD	A,(F_STAT)
+	BIT	5,A
+	JR	NZ,RPLPR1	;Debug ON
+	PUSH	HL
+	LD	A,4
+RPLPRC:	LD	(HL),0		;clear Reply-Code + "-"/" "
+	INC	HL
+	DEC	A
+	JR	NZ,RPLPRC
+	POP	HL
+RPLPR1:	LD	A,CR
+RPLPR2:	CPI
+	SCF			;incomplete message
+	RET	PO		;response scanned
+	JR	NZ,RPLPR2	;search CR
+	LD	A,LF
+	CPI
+	JP	PO,RPLPR3	;response scanned
+	JR	NZ,RPLPR1	;search CR+LF
+	BIT	4,(IY+2)	;Reply-Code line?
+	JR	Z,RPLPRZ	;no->next line
+	LD	A,(RPLYCH)
+	CP	' '		;last line?
+	JR	NZ,RPLPRZ	;no->next line
+	LD	(FUMPTR),HL
+	LD	(FUMSIZ),BC	;save unparsed SIZE
+	SET	5,(IY+2)	;activate multimessage
+	RET			;CY=0->activate first message!
+RPLPR3:	SCF			;incomplete message
+	RET	NZ		;<>LF
+	LD	A,(RPLYCH)
+	CP	' '		;last line?
+	RET	Z		;CY=0!
+	SCF			;incomplete message
+	RET
+CDATAO:	;buffer data out to CON: (and logfile)
+	LD	DE,LOGCTL
+CDATAC:	LD	A,(HL)
+	CP	LF
+	JR	Z,CDATAZ
+	CP	CR
+	JR	Z,CDATAZ
+	CALL	ISPRINT##
+CDATAZ:	PUSH	AF
+	CALL	Z,WRLOGB	;uses Z!
+	POP	AF
+;	CALL	Z,COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	INC	HL
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,CDATAC
+	RET
+CDVOUT:	;Verbose=ON: Print received message to CON
+	LD	A,(F_STAT)
+	BIT	2,A
+	JR	NZ,CDAOUT	;verbose ON
+	LD	HL,(RPLYCD)
+	LD	DE,400
+	OR	A
+	SBC	HL,DE
+	JR	C,CDAOUQ	;drop 1xx/2xx/3xx-Replies
+CDAOUT:	;Always: Print received message to CON
+	LD	HL,(F_MBUF)	;control message buffer
+	LD	BC,(RPLYSZ)	;reply message length
+	CALL	CDATAO		;out
+CDAOUQ:	LD	HL,F_SREM
+	RES	7,(HL)		;quit reply!
+	RET
+SCANFT:	;scan for features
+	LD	HL,(RPLYCD)
+	LD	DE,211		;"Feat Ok"
+	OR	A
+	SBC	HL,DE
+	RET	NZ		;no "FEAT" support
+	LD	HL,(F_MBUF)	;control message buffer
+	LD	D,H
+	LD	E,L
+	LD	BC,(RPLYSZ)	;reply message length
+	ADD	HL,BC
+	PUSH	HL
+	LD	C,(HL)		;save
+	LD	B,0		;reset
+	LD	(HL),B		;terminate
+	LD	HL,4
+	ADD	HL,DE		;skip first reply code !
+	LD	DE,FTMDTM
+	PUSH	HL
+	CALL	INSTR##
+	POP	HL
+	JR	NZ,SCANF1
+	SET	0,B		;MDTM ON
+SCANF1:	LD	DE,FTMFMT
+	PUSH	HL
+	CALL	INSTR##
+	POP	HL
+	JR	NZ,SCANF2
+	SET	1,B		;MFMT ON
+SCANF2:	LD	DE,FTMFCT
+	PUSH	HL
+	CALL	INSTR##
+	POP	HL
+	JR	NZ,SCANFS
+	SET	2,B		;MFCT ON
+SCANFS:	LD	A,(IY+4)
+	XOR	B		;set features
+	LD	(IY+4),A
+	POP	HL
+	LD	(HL),C		;restore
+	RET
+FTMFMT:	DB	' MFMT',CR,LF,0
+FTMFCT:	DB	' MFCT',CR,LF,0
+FTMDTM:	DB	' MDTM',CR,LF,0
+DTRSTR:	;load DSocket/reset Transfer-State
+	LD	IX,(FDSBUF)	;Dsocket
+	LD	A,(IX+F_SOST)
+	AND	11100001B	;reset Put file stamp|Put/Get file exists|Local file open|Transfer ERR
+	LD	(IX+F_SOST),A
+	RET
+TROPEN:	;open Data-Transfer
+	LD	IX,(FDSBUF)	;Dsocket
+	XOR	A
+	LD	(IX+F_SIZE),A
+	LD	(IX+F_SIZE+1),A
+	LD	(IX+F_SIZE+2),A
+	LD	(IX+F_SIZE+3),A	;reset bSize
+	LD	(DSKTSZ),A
+	LD	(DSKTSZ+1),A	;reset kBSize
+	LD	(DSCKUP),HL
+	LD	(DSCKRT),DE
+	RES	1,(IX+F_SOST)	;reset Transfer ERR
+	RES	5,(IX+F_SOST)	;reset Flush Data
+	SET	7,(IY+3)	;Transfer ON
+	RET
+SVMCMD:	;save running M-command
+	;PI: DE - new Ret-PTR
+	LD	IX,(FDSBUF)	;Dsocket
+	LD	HL,(MCRETA)	;current PTR to M-command return
+	LD	(MCRETB),HL	;->backup
+	LD	(MCRETA),DE	;new PTR to M-command return
+SVMFLG:	BIT	5,(IY+3)	;M-command ON?
+	SET	6,(IY+3)	;save
+	RET	NZ
+	RES	6,(IY+3)	;save
+	RET
+RSMCMD:	;restore old M-command
+	LD	IX,(FDSBUF)	;Dsocket
+	LD	HL,(MCRETB)	;backup
+	LD	(MCRETA),HL	;->old PTR to M-command return
+RSMFLG:	BIT	6,(IY+3)	;M-command ON?
+	SET	5,(IY+3)	;restore
+	RET	NZ
+	RES	5,(IY+3)	;restore
+	RET
+MCMEND:	;M-command close Msg
+	LD	DE,(F_LBUF)
+	CALL	ACTOUT
+	LD	HL,(MFILES)
+	PUSH	HL
+	OR	A
+	SBC	HL,BC
+	CALL	MHLFDC##
+	LD	HL,F_CMX1
+	CALL	COPCMD
+	POP	HL
+	CALL	MHLFDC##
+	LD	HL,F_CMX2
+	CALL	COPCMD
+	LD	HL,(B_VBUF)
+	LD	(F_VBUF),HL	;restore DIR-PTR
+	RET
+MDINIT:	;init NLST-Save
+	LD	HL,(F_VBUF)
+	LD	(TEMP),HL	;DIR-PTR running
+	CALL	GETMTOP##
+	LD	DE,-32
+	ADD	HL,DE
+	LD	(TEMP+2),HL	;DIR-PTR max.
+	LD	HL,0
+	LD	(TEMP+4),HL	;cp/m files counter
+	LD	(TEMP+12),HL	;all files counter
+	LD	HL,(F_LBUF)
+	LD	(TEMP+6),HL	;LINE-PTR
+	LD	(TEMP+8),HL	;LINE-PTR running
+	LD	DE,F_LSIZ
+	ADD	HL,DE
+	DEC	HL
+	LD	(TEMP+10),HL	;LINE-PTR max.
+	RET
+DCLOSE:	;close DATA connection
+	LD	IX,(FDSBUF)	;Dsocket
+SCLOSE:	;close (IX)-Socket
+	LD	A,(IX)
+	CALL	SHUTDN
+	RES	7,(IX+F_SOST)	;set offline
+	RES	6,(IX+F_SOST)	;wait OFF
+	CCF
+	RET	C		;closed!
+	;reinit (invalid) (IX)-Socket
+	LD	A,(IX)
+	CALL	CLOSE
+SCKRIN:	;(re)allocate TCP-socket to (IX) and A
+	LD	A,0FFH		;any
+	LD	D,SK_STREAM	;Mode
+	LD	E,SO_NDACK	;Flags
+	CALL	SOCKET		;(re)allocate
+	RET	C		;ERR!
+	LD	(IX),A		;OK
+	RET
+
+;### Command processing SUB-programs ###################
+	;search cmd-string in given record range
+	;PI:   HL - range start
+	;      BC - range size
+	;      DE - search string (PTR to NULL for all)
+	;	A - record mark
+	;PO: CY=1 - range scanned
+	;    CY=0 - record with search string found
+	;TARG 4-9 - cmd function and pointers
+	;VR: F,HL,BC
+ZSTRFD:	CPIR
+	SCF
+	RET	PO		;search range scanned
+	CCF			;CY=0!
+	PUSH	AF
+	PUSH	DE
+	PUSH	DE
+	LD	E,(HL)
+	INC	HL
+	DEC	BC
+	LD	D,(HL)
+	INC	HL
+	DEC	BC
+	LD	(TARG6),DE	;command function address
+	LD	(TARG7),HL	;command range string address
+	POP	DE
+ZSTRF2:	LD	A,(DE)		;search string
+	CALL	ISALPHA##
+	JR	NZ,ZSTRF3
+	AND	5FH		;ucase
+ZSTRF3:	INC	DE
+	OR	A
+	JR	Z,ZSTRF4	;search string end
+	CPI
+	JR	Z,ZSTRF2	;search string = range string
+	POP	DE
+	POP	AF
+	JR	ZSTRFD		;next record
+ZSTRF4:	POP	DE
+	POP	AF
+ZSTRF5:	INC	(HL)
+	DEC	(HL)
+	JR	Z,ZSTRF6	;range string end
+	INC	HL
+	DEC	BC		;reduce counter too!
+	JR	ZSTRF5
+ZSTRF6:	INC	HL
+	DEC	BC		;reduce counter too!
+	LD	(TARG8),HL	;cmd-control address
+	INC	HL
+	DEC	BC		;reduce counter too!
+	LD	(TARG9),HL	;help-zstring
+	RET
+IBFOUT:	;InBuffer Out
+	LD	HL,(F_IBUF)
+	LD	D,H
+	LD	E,L
+	CALL	ZKOUT		;Cursor max. pos.
+	LD	BC,(F_EPTR)
+	OR	A
+	SBC	HL,BC
+	RET	Z		;empty
+	LD	H,B
+	LD	L,C		;pos. max.
+	LD	BC,(F_IPTR)
+	OR	A
+	SBC	HL,BC		;end - in
+	RET	Z		;Cursor Ok
+	LD	D,LEFT		;Cursor -> in
+	JP	MOVCUR		;*(HL)
+CHARIN:	;insert A into input buffer
+	CALL	ISPRINT##	;20H-7EH?
+	SCF			;not printable 
+	RET	NZ		;skip
+	LD	HL,(F_IBUF)
+	LD	DE,F_ISIZ-1	;without 0-Byte!
+	ADD	HL,DE
+	LD	B,H
+	LD	C,L		;max. pos.
+	LD	HL,(F_EPTR)
+	PUSH	HL
+	SBC	HL,BC		;max. pos.?
+	POP	HL
+	JR	NZ,CHARIC	;no->cont.
+	LD	A,BEEP		;for output
+	SCF			;like not printable
+	RET
+CHARIC:	LD	DE,(F_IPTR)
+	PUSH	HL
+	OR	A
+	SBC	HL,DE		;last pos.?
+	LD	B,H
+	LD	C,L		;end - in
+	POP	HL
+	JR	NZ,CHARIS	;->no and CY=0!
+	LD	(DE),A		;sign in
+	JR	CHARIL		;load/terminate/out
+CHARIS:	PUSH	HL		;end
+	PUSH	DE		;in
+	PUSH	BC
+	INC	BC		;+delimiter
+	LD	D,H
+	LD	E,L		;ptr delimiter
+	INC	DE
+	LDDR			;shift right input+0
+	INC	HL
+	LD	(HL),A		;sign in new char
+	LD	D,H
+	LD	E,L
+	CALL	ZKOUT		;new input out
+	POP	HL
+	LD	D,LEFT		;back after! new char
+	CALL	MOVCUR		;*(HL)
+	POP	DE
+	POP	HL
+	XOR	A		;A=0!
+CHARIL:	INC	DE		;in-ptr+
+	INC	HL		;end-ptr+
+	JP	CHRILD		;load/terminate/out
+	;
+CHRCTR:	;do CTRL-functions and drop all other not printable char's
+	LD	HL,KEYTAB	;key-tab
+	LD	DE,KJPTAB	;fct-tab
+	LD	B,LOW(KEYCNT)	;# of Control Chars
+CHRCTC:	CP	(HL)
+	JR	NZ,CHRCTN
+	;goto CTRL-function
+	EX	DE,HL
+	LD	C,(HL)
+	INC	HL
+	LD	B,(HL)
+	LD	HL,F_SCMD	;load cmd state ptr
+	LD	E,(HL)		;load cmd state
+	PUSH	BC
+	RET			;like CALL (BC)
+CHRCTN:	INC	HL		;next key
+	INC	DE
+	INC	DE		;next fct
+	DJNZ	CHRCTC
+	CALL	ISPRINT##	;20H-7EH?
+	RET	Z		;yes->sign in
+	XOR	A		;drop all other char's!
+	RET
+	;Control Char and function table
+KEYTAB:	DB	CUL,CUR,SCUL,SCUR,DELE,BSP,ENT,CLN,TAB,CUU,CUD
+KEYCNT	EQU	$-KEYTAB
+KJPTAB:	DW	CLEFT
+	DW	CRIGHT
+	DW	CPOS1
+	DW	CPEND
+	DW	DELETE
+	DW	BSPACE
+	DW	EXECMD
+	DW	CLRINP
+	DW	TABULATOR
+	DW	CMDUP
+	DW	CMDDN
+	;
+TSCRIPT: ;terminate running script
+
+	RET
+MOVCP1:	;Cursor -> POS1
+	LD	HL,(F_IPTR)
+	LD	DE,(F_IBUF)
+	OR	A		;A=0!
+	SBC	HL,DE
+	RET	Z
+	LD	D,LEFT
+MOVCUR:	;move Cursor
+	PUSH	AF
+MOVCUW:	LD	A,D
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	DEC	HL
+	LD	A,H
+	OR	L
+	JR	NZ,MOVCUW
+	POP	AF
+	RET
+MOVTST:	;test move
+	LD	A,20H		;blur ON?
+	AND	E
+	LD	A,BEEP		;for output
+	SCF
+	RET	NZ		;->yes
+	PUSH	BC
+	LD	BC,(F_IPTR)
+	XOR	A		;A=0!
+	SBC	HL,BC
+	POP	HL		;movement
+	SCF
+	RET	Z
+	CCF
+	RET
+CLEFT:	;Cursor left
+	LD	HL,(F_IBUF)
+	LD	BC,-1
+	LD	D,LEFT
+	JR	CMOVET
+CRIGHT:	;Cursor right
+	LD	HL,(F_EPTR)
+	LD	BC,1
+	LD	D,RIGHT
+CMOVET:	CALL	MOVTST
+	RET	C		;blur or max. pos.
+	ADD	HL,BC
+	LD	(F_IPTR),HL	;follow Cursor
+	LD	A,D
+	OR	A		;CY=0!
+	RET
+CPOS1:	;Cursor -> first pos.
+	CALL	MOVCP1
+	LD	HL,(F_IBUF)
+	JR	CPENDI
+CPEND:	;Cursor -> last pos.
+	CALL	ENTER
+	LD	HL,(F_EPTR)
+CPENDI:	LD	(F_IPTR),HL
+	XOR	A		;A=0!
+	RET
+DELETE:	;delete char
+	LD	HL,(F_EPTR)
+	CALL	MOVTST
+	RET	C		;blur or last pos.
+	LD	H,B
+	LD	L,C		;in-ptr
+	JR	BSPAIN		;like BS without Cursor left
+BSPACE:	;back space
+	CALL	CLEFT
+	RET	C		;blur or first pos.
+;	CALL	COUT##		;move Cursor left
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+BSPAIN:	PUSH	HL
+	INC	HL		;in-ptr+1
+	LD	D,H
+	LD	E,L
+	CALL	ZKOUT		;overwrite output ...
+	LD	A,' '
+	CALL	COUT##		;... and old last char
+	LD	HL,(F_EPTR)
+	DEC	HL		;end-ptr-1
+	LD	(F_EPTR),HL
+	POP	DE		;new in-ptr
+	SBC	HL,DE		;end - in
+	PUSH	DE
+	PUSH	HL
+	INC	HL		;+old last char!
+	LD	D,LEFT
+	CALL	MOVCUR		;*(HL)
+	POP	BC
+	INC	BC		;+delimiter
+	POP	DE
+	LD	H,D
+	LD	L,E		;DE=new in-ptr
+	INC	HL		;HL=old in-ptr
+	LDIR			;shift left input+0 
+	XOR	A		;A=0!
+	RET
+EXECMD:	;execute
+	LD	A,20H+40H	;blur/redirect ON?
+	AND	E
+	JR	NZ,CMDSKP	;skip
+	;cmd into history
+	LD	HL,(F_EPTR)
+	LD	DE,(F_IBUF)
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMDSKP	;in empty
+	INC	HL		;+0
+	LD	B,H
+	LD	C,L		;cmd length
+	LD	HL,0
+	LD	(F_HPTR),HL	;reset hptr
+	LD	HL,(F_HBUF)
+	EX	DE,HL
+	PUSH	DE
+	PUSH	BC
+	PUSH	HL
+	PUSH	DE
+	EXX			;BC*: HL=in -> DE=hist
+	;already there?
+	LD	BC,F_HSIZ-1	;without 0-Byte!
+	POP	HL		;hist
+	POP	DE		;in
+	XOR	A
+CMDSRC:	CP	(HL)
+	JR	Z,CMDNFD	;hcmd's end
+CMDSR1:	PUSH	DE
+CMDSR2:	LD	A,(DE)		;in
+	INC	DE
+	OR	A
+	JR	Z,CMDSR3	;in end
+	CPI
+	JR	Z,CMDSR2	;in = hcmd
+CMDSR3:	POP	DE
+	JR	NZ,CMDSR4	;next hcmd
+	INC	(HL)
+	DEC	(HL)
+	JR	Z,CMDFND	;hcmd end
+CMDSR4:	XOR	A
+	CPIR
+	JP	PO,CMDNFD	;hend
+	JR	CMDSRC		;next hcmd
+CMDFND:	;cmd found: hist shift over hcmd
+	POP	BC		;cmd length
+	INC	HL		;end of hcmd +1
+	POP	DE		;hist
+	OR	A
+	SBC	HL,DE		;reduced hsize
+	PUSH	HL
+	SBC	HL,BC
+	POP	HL
+	JR	Z,CMDSKP	;first entry
+	EX	DE,HL
+	JR	CMDSHF
+CMDNFD:	;not found: hist shift
+	POP	BC		;cmd length
+	POP	HL		;hist
+	LD	DE,F_HSIZ-1	;without 0-Byte!
+CMDSHF:	ADD	HL,DE
+	DEC	HL		;(reduced) hend-1
+	EX	DE,HL		;DE=destin. haddress
+	SBC	HL,BC		;(reduced) hsize - cmd length
+	PUSH	HL		;shift length
+	LD	H,D
+	LD	L,E
+	SBC	HL,BC		;HL=source haddress
+	POP	BC
+	LDDR			;shift up history
+	;terminate hend
+	LD	HL,(F_HBUF)
+	LD	DE,F_HSIZ-2	;end of hcmd's
+	ADD	HL,DE
+	XOR	A
+CMDTRM:	CP	(HL)
+	LD	(HL),A
+	DEC	HL
+	JR	NZ,CMDTRM
+	EXX
+	;cmd -> first hist entry
+	LDIR
+CMDSKP:	;restore key-code!
+	LD	A,ENT
+ENTER:	;Cursor -> last pos.
+	LD	HL,(F_EPTR)
+	LD	BC,(F_IPTR)
+	OR	A
+	SBC	HL,BC
+	RET	Z
+	LD	D,RIGHT
+	JP	MOVCUR		;*(HL)
+CLRINP:	;clear input buffer
+	LD	A,20H		;blur ON?
+	AND	E
+	JR	Z,CLRINC	;->no
+	SET	0,(HL)		;rebuild cmdline
+	LD	A,CLLN
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	CLRIBF
+CLRINC:	LD	HL,(F_EPTR)
+	LD	DE,(F_IBUF)
+	XOR	A		;A=0!
+	SBC	HL,DE
+	RET	Z		;empty
+	PUSH	HL
+	CALL	ENTER
+	POP	HL
+CLRINW:	LD	A,LEFT
+	CALL	COUT##
+	LD	A,' '
+	CALL	COUT##
+	LD	A,LEFT
+	CALL	COUT##
+	DEC	HL
+	LD	A,H
+	OR	L
+	JR	NZ,CLRINW	;A=0!
+CLRIBF:	;reset input buffer (preserve A!)
+	LD	HL,(F_IBUF)
+CHRBLD:	;load buffer-ptr to HL
+	LD	D,H
+	LD	E,L
+CHRILD: ;load in-ptr
+	LD	(F_IPTR),DE
+CHRELD: ;load end-ptr and -mark
+	LD	(F_EPTR),HL
+	LD	(HL),0		;EOB
+	RET
+CMDUP:	;history backward
+	LD	A,20H+40H	;blur/redirect ON?
+	AND	E
+	LD	A,0		;A=0!
+	RET	NZ
+	LD	HL,(F_HBUF)
+	CP	(HL)
+	RET	Z		;hist empty
+	PUSH	HL
+	CALL	CLRINC		;DE=F_IBUF!
+	POP	HL
+	LD	BC,(F_HPTR)
+	LD	A,B
+	OR	C
+	JR	Z,CMDDNC	;first entry
+	LD	H,B
+	LD	L,C
+	XOR	A
+CMDUPR:	INC	HL
+	CP	(HL)
+	JR	NZ,CMDUPR
+	INC	HL
+	CP	(HL)
+	JR	NZ,CMDDNC	;next entry
+	LD	H,B
+	LD	L,C
+	JR	CMDDNC		;last entry
+CMDDN:	;history forward
+	LD	A,20H+40H	;blur/redirect ON?
+	AND	E
+	LD	A,0		;A=0!
+	RET	NZ
+	CALL	CLRINC		;DE=F_IBUF!
+	LD	HL,(F_HPTR)
+	LD	A,H
+	OR	L
+	JR	Z,CMDDNI	;cmdline -> like CLRINP
+	XOR	A
+	LD	BC,(F_HBUF)
+	PUSH	HL
+	SBC	HL,BC
+	POP	HL
+	JR	NZ,CMDDNR
+	LD	(F_HPTR),A
+	LD	(F_HPTR+1),A	;reset hptr
+	JR	CMDDNI
+CMDDNR:	DEC	HL
+	PUSH	HL
+	OR	A
+	SBC	HL,BC		;first entry?
+	POP	HL
+	JR	Z,CMDDNC	;->yes
+	DEC	HL
+	CP	(HL)		;previous entry?
+	INC	HL
+	JR	NZ,CMDDNR	;->no
+CMDDNC:	LD	(F_HPTR),HL
+	CALL	COPCMD		;copy
+CMDDNI:	LD	HL,F_SCMD
+	SET	0,(HL)		;rebuild cmdline
+	JR	TABCOP
+TABULATOR: ;command help
+	LD	A,20H		;blur ON?
+	AND	E
+	LD	A,0		;A=0!
+	RET	NZ		;yes->help locked
+	LD	DE,(F_IBUF)	;find suitable commands!
+	LD	HL,CMDTAB
+	LD	BC,CMDTLG
+	XOR	A
+	EX	AF,AF'
+TABULW:	LD	A,'@'
+	CALL	ZSTRFD		;search command
+	JR	C,TABULE	;search range scanned
+	EX	AF,AF'
+	INC	A		;found+1
+	PUSH	HL
+	LD	HL,(TARG7)
+	LD	(TARG3),HL	;save command string
+	POP	HL
+	EX	AF,AF'
+	JR	TABULW		;next command
+TABULE:	EX	AF,AF'
+	OR	A
+	JR	NZ,TABULF
+	LD	A,BEEP		;no commands found
+	RET
+TABULF:	LD	HL,F_SCMD
+	SET	0,(HL)		;rebuild cmdline
+	LD	DE,(F_IBUF)	;->into input buffer
+	DEC	A
+	JR	NZ,TABULM
+	;one command found
+	LD	HL,(TARG3)	;full command string
+	CALL	COPCMD		;copy
+TABCOP:	EX	DE,HL		;HL=new in- and end-ptr
+	LD	A,CR
+	CALL	COUT##		;overwrite cmdline
+	JP	CHRBLD
+TABULM:	;multiple commands found
+	PUSH	DE
+	CALL	ENTER
+	CALL	NEWLN		;next cmdline
+	POP	DE		;DE=search string!
+	CALL	CCMDUP		;list commands
+	XOR	A		;A=0!
+	RET
+SCRFNT:	;test script DU:FN.FT (HL) and scripting ON
+	CALL	TESTDU		;test and get DU:
+	RET	C		;Err
+	LD	(NWS_DU),BC	;new or current
+	LD	DE,SPCSTR
+	CALL	TSTDNM		;FN.FT to 8.3+0 string
+	RET	C		;ERR in FN.FT
+	LD	DE,XE_AMFN
+	CALL	NZ,ACTOUT	;->CY=1
+	RET	NZ		;ambiguous filename
+	BIT	6,(IY+4)	;scripting ON?
+	CALL	NZ,SCRFCL	;yes->close
+	LD	HL,(NWS_DU)
+	LD	(SCR_DU),HL	;activate
+	LD	DE,SCFFCB
+	LD	HL,SPCSTR
+	CALL	CSPFCB		;copy to FCB
+	PUSH	DE
+	LD	DE,SCRSFT
+	CALL	Z,LOADST	;load standard FT
+	POP	DE
+	SET	6,(IY+4)	;scripting ON
+	OR	A		;CY=0!
+	RET
+SCROSF:	;open script file - ERR->scripting OFF
+	LD	BC,(SCR_DU)
+	CALL	LOGTST
+	LD	DE,SCFCTL
+	CALL	_FYI$OPEN
+	PUSH	AF
+	LD	BC,(CUR_DU)
+	CALL	LOGTST
+	POP	AF
+	SCF
+	CCF
+	RET	NZ		;Ok
+	LD	DE,XE_SFNF
+	CALL	ACTOUT		;activate ERR msg
+	SCF
+	JR	SCRFCI
+SCRTMN:	;terminate scripting
+	BIT	6,(IY+4)	;script active?
+	RET	Z		;no
+	LD	A,BEEP
+	CALL	COUT##
+	LD	A,BEEP
+	CALL	COUT##		;quit
+	LD	A,ETX		;restore
+SCRFCL:	;close Script file
+	PUSH	AF
+	LD	BC,(SCR_DU)
+	CALL	LOGTST
+	LD	DE,SCFCTL
+	CALL	_FYI$CLOSE	;close running script
+	LD	BC,(CUR_DU)
+	CALL	LOGTST
+	POP	AF
+SCRFCI:	RES	6,(IY+4)	;scripting OFF
+	RET
+LINPUT:	;read in CON: / SCRIPT:
+	CALL	CONDIN##	;char in A?
+	JR	NZ,SCRBRK	;yes->process
+	XOR	A		;reset A = no input!
+SCRBRK:	CP	ETX		;>BRK<?
+	CALL	Z,SCRTMN	;yes->abort running script
+SCRCMD:	;do scripting
+	SCF			;do script cmd = OFF
+	BIT	6,(IY+4)
+	RET	Z		;script OFF
+	BIT	7,(IY+3)
+	RET	NZ		;Transfer ON
+	BIT	7,(IY+1)
+	RET	NZ		;Callback ON
+	BIT	6,(IY+1)
+	RET	NZ		;Redirect ON
+	LD	HL,(F_IBUF)
+	BIT	5,(IY+4)	;next line has been read?
+	JR	Z,SCRRDL	;no
+	RES	5,(IY+4)	;quit!
+	EX	DE,HL
+	LD	HL,(F_DBUF)
+	PUSH	DE
+	CALL	COPCMD		;copy into F_IBUF ...
+	POP	DE
+	JR	SCROUI		;... and out
+SCRRDL:	;script line -> F_xBUF
+	LD	BC,(SCR_DU)
+	CALL	LOGTST
+	LD	BC,F_ISIZ-1	;without 0-Byte!
+	LD	DE,SCFCTL
+HIFRDL:	;line -> (F_xBUF)
+	PUSH	HL		;(F_xBUF)
+SCRCNT:	CALL	TSTLNE
+	JR	C,SCREOF	;EOF
+	JR	Z,SCRTRM	;EOL
+	CALL	ISPRINT##	;20H-7EH?
+	JR	NZ,SCRCNT	;no->continue
+	PUSH	DE
+	LD	D,A
+	LD	A,B
+	OR	C
+	LD	A,D
+	POP	DE
+	JR	Z,SCRCNT	;F_xBUF full
+	LD	(HL),A
+	INC	HL
+	DEC	BC
+	JR	SCRCNT		;next char
+SCREOF:	CALL	_FYI$CLOSE
+	RES	6,(IY+4)	;scripting OFF
+SCRTRM:	LD	(HL),0		;terminate line
+	POP	DE		;old (F_xBUF)
+	PUSH	HL
+	LD	HL,(F_IBUF)
+	OR	A
+	SBC	HL,DE		;read into (F_IBUF)?
+	POP	HL		;current (F_xBUF)
+	RET	NZ		;no->never out
+	LD	BC,(CUR_DU)	;-> current!
+	CALL	LOGTST
+SCROUI:	EX	DE,HL
+	CALL	HDCMTS		;hide line?
+	EX	DE,HL
+	CALL	NZ,ZKOUT	;line out
+	XOR	A		;CY=0->do script cmd = ON
+	RET
+SCRLPR:	;pre-read line
+	LD	HL,(F_DBUF)
+	CALL	SCRRDL		;pre-read next line
+	LD	BC,(CUR_DU)	;-> current!
+	CALL	LOGTST
+	SET	5,(IY+4)	;pre-read ON
+	EX	DE,HL		;HL=(F_DBUF)
+	RET
+TSTLNE:	;test EOF (CY=1) and EOL (Z=1)
+	CALL	_FY$GET		;next byte in A
+	SCF
+	RET	Z		;EOF
+	CP	CR
+	JR	NZ,SKIPNE
+	CALL	_FY$GET
+	SCF
+	RET	Z		;EOF
+	CP	LF
+	RET	Z		;Z=1: EOL WIN/CPM
+	CALL	_FY$UNGET
+	XOR	A		;Z=1: EOL MAC
+	RET
+SKIPNE:	CP	LF
+	SCF
+	CCF
+	RET			;Z=1: EOL UNIX
+HDCMTS:	;test command lines to hide: Z=1
+	LD	DE,LCUSER
+	CALL	CMP5BT
+	RET	Z
+	LD	DE,LCPASS
+	CALL	CMP5BT
+	RET	Z
+	LD	DE,LCACCT
+	CALL	CMP5BT
+	RET
+LCUSER:	DB	'USER '
+LCPASS:	DB	'PASS '
+LCACCT:	DB	'ACCT '
+ARGTST:	;process command ARG (HL)
+	LD	A,(HL)
+	OR	A
+	SCF
+	RET	Z		;no input
+	CP	';'
+	SCF
+	RET	Z		;comment line
+	CP	' '
+	SCF
+	RET	Z		;comment line
+	PUSH	HL
+	SET	2,(IY+1)	;ARG ON
+	LD	A,' '
+ARGTS1:	INC	HL
+	CP	(HL)
+	JR	Z,ARGTS2	;first token end
+	INC	(HL)
+	DEC	(HL)		;command end?
+	JR	NZ,ARGTS1	;no->continue
+	JR	ARGTS3
+ARGTS2:	XOR	A
+	LD	(HL),A		;terminate first token
+	INC	HL
+	CP	(HL)
+	JR	NZ,ARGTS4
+ARGTS3:	RES	2,(IY+1)	;ARG OFF
+ARGTS4:	LD	(TARG1),HL	;ARG address
+	POP	HL
+	CALL	CAPSTR##	;capitalize first token
+	OR	A		;Ok
+	RET
+LOCLGI:	;log input
+	PUSH	AF
+	BIT	5,(IY+1)	;Blur ON?
+	JR	NZ,LOCLGL	;skip
+	PUSH	DE
+	CALL	HDCMTS		;hide line?
+	POP	DE
+	JR	Z,LOCLGL	;skip
+	BIT	6,(IY+1)	;redir. ON?
+	JR	Z,LOCLGW	;no->log
+	PUSH	HL
+	LD	BC,(RDRPRO)
+	LD	HL,CAUSER
+	OR	A
+	SBC	HL,BC		;USER?
+	JR	Z,LOCLGS
+	LD	HL,CAPASS
+	OR	A
+	SBC	HL,BC		;PASS?
+	JR	Z,LOCLGS
+	LD	HL,CAACCT
+	OR	A
+	SBC	HL,BC		;ACCT?
+LOCLGS:	POP	HL
+	JR	Z,LOCLGL	;skip
+LOCLGW:	LD	A,(HL)
+	INC	HL
+	AND	A
+	JR	Z,LOCLGL
+	CALL	WRLOGB
+	JR	LOCLGW
+LOCLGB:	PUSH	AF
+	CALL	WRLOGB		;log char
+LOCLGL:	CALL	WLOGNL		;log NL
+	POP	AF
+	RET
+LOCEXE:	;do F_IBUF (Redir. ON: preserve A!)
+	LD	HL,(F_IBUF)
+	LD	DE,LOGCTL
+	BIT	4,(IY+1)	;one-char input ON?
+	CALL	NZ,LOCLGB
+	CALL	Z,LOCLGI
+	BIT	6,(IY+1)	;Redirect ON?
+	JR	Z,LOCEXI
+	;do redirection
+	BIT	5,(IY+3)	;M-Command active?
+	PUSH	AF
+	JR	Z,LOCEXC
+	RES	5,(IY+3)	;yes->hide
+LOCEXC:	LD	HL,(CBADDR)	;callback address
+	CALL	JMPIHL
+	JR	LOCEXP
+LOCEXI:	;do command
+	LD	HL,(F_IBUF)
+	CALL	ARGTST
+	JR	C,LOCEXR	;no data->skip
+	BIT	5,(IY+3)	;M-Command active?
+	PUSH	AF
+	JR	Z,LOCEXD
+	RES	5,(IY+3)	;yes->hide
+LOCEXD:	CALL	CMDCTR		;search and execute
+LOCEXP:	LD	IY,F_STAT	;reload state table
+	POP	AF		;M-Command state old!
+	JR	Z,LOCEXR	;do not touch new state from CMDCTR!
+	SET	5,(IY+3)	;restore active M-Command
+LOCEXR:	CALL	CLRIBF		;reset input buffer
+	RES	1,(IY+1)	;quit command flag
+	RET
+CMDCTR:	;search and execute FTP command
+	LD	HL,CMDTAB
+	LD	BC,CMDTLG
+	LD	DE,(F_IBUF)
+CMDCTN:	LD	A,'@'
+	CALL	ZSTRFD
+	JR	C,CMDCT1	;range scanned
+	;record found (preserve HL,DE,BC!)
+	PUSH	HL
+	PUSH	DE
+	PUSH	BC
+	LD	HL,TARG6
+	LD	DE,TARG2	;copy cmd data
+	LD	BC,8
+	LDIR
+	POP	BC
+	POP	DE
+	POP	HL
+	BIT	1,(IY+1)	;first command found?
+	SET	1,(IY+1)	;set
+	JR	Z,CMDCTN	;yes->continue search
+	LD	DE,F_CMXK	;'ambiguous command'
+	JR	CMDCTE
+CMDCT1:	BIT	1,(IY+1)	;unambiguous command found?
+	JR	NZ,CMDCT2	;yes
+	LD	DE,F_CMXJ	;'unknown command'
+CMDCTE:	CALL	ACTOUT
+	RET
+CMDCT2:	LD	HL,(TARG4)	;cmd control
+	BIT	0,(HL)		;connection required?
+	JR	Z,CMDCT3	;->no
+	BIT	7,(IX+F_SOST)	;online?
+	LD	DE,F_CMXE	;'not connected'
+	JR	Z,CMDCTE	;->no
+CMDCT3:	BIT	1,(HL)		;locked during transfer?
+	JR	Z,CLJCMD	;->no
+	BIT	7,(IY+3)	;Transfer active?
+	LD	DE,F_CMXN	;'command locked'
+	JR	NZ,CMDCTE	;->yes
+CLJCMD:	LD	HL,(TARG2)
+JMPIHL:	JP	(HL)		;->execute (remote) command
+RDREXE:	;toggle redirection
+	XOR	(IY+1)
+	LD	(IY+1),A	;toggle
+	LD	(RDRPRO),DE	;optional Prompt
+	LD	(CBADDR),HL	;Callback-Function
+	RET
+WTROFF:	;wait for reset redirection
+	BIT	7,(IY+2)	;Cdata received?
+	RET	Z		;No -> wait
+RDROFF:	;reset redirection and prompt (preserve Z!)
+	RES	3,(IY+1)	;Prompt ON!
+	LD	A,0		;dummy for toggle!
+RDRTGL:	;reset redirection and toggle local input
+	PUSH	AF
+	PUSH	HL
+	PUSH	DE
+	LD	HL,CDVOUT	;standard function
+	LD	(CBADDR),HL	;load
+	XOR	(IY+1)		;toggle
+	LD	(IY+1),A
+	RES	6,(IY+1)	;Redirect 'hard' off
+	RES	7,(IY+1)	;Callback 'hard' off
+	POP	DE
+	POP	HL
+	POP	AF
+	RET
+
+;### alphabetically FTP Command Table ##################
+;	DB	mark
+;	DW	function-PTR
+;	DW	cmd-zstring
+;	DB	cmd control
+;		Bit 0=1: connection required
+;		Bit 1=1: locked during data transfer
+;	DW	help-zstring
+	;
+CMDTAB:	;
+	DB	'@'
+	DW	CMD_ABORT
+	DB	'ABORT',0
+	DB	0+1
+	DB	'Abort service command and data transfer.',0
+	;
+	DB	'@'
+	DW	CMD_ASCII
+	DB	'ASCII',0
+	DB	0+1+2
+	DB	'Set ASCII data type.',0
+	;
+	DB	'@'
+	DW	CMD_BINARY
+	DB	'BINARY',0
+	DB	0+1+2
+	DB	'Set BINARY data type.',0
+	;
+	DB	'@'
+	DW	CMD_CD
+	DB	'CD ',0
+	DB	0+1+2
+	DB	'Print or change remote working Directory.',0
+	;
+	DB	'@'
+	DW	CMD_CLOSE
+	DB	'CLOSE',0
+	DB	0+1+2
+	DB	'Terminate FTP-Session.',0
+	;
+	DB	'@'
+	DW	CMD_CLS
+	DB	'CLS',0
+	DB	0
+	DB	'Clear screen.',0
+	;
+	DB	'@'
+	DW	CMD_DEBUG
+	DB	'DEBUG',0
+	DB	0
+	DB	'Set debug mode.',0
+	;
+	DB	'@'
+	DW	CMD_DELETE
+	DB	'DELETE ',0
+	DB	0+1+2
+	DB	'Delete file on the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_DIR
+	DB	'DIR ',0
+	DB	0+1+2
+	DB	'List content of remote Directory. (opt. ARG)',0
+	;
+	DB	'@'
+	DW	CMD_EOF
+	DB	'EOF',0
+	DB	0+2
+	DB	'Set EOF-Stop for sending of local files.',0
+	;
+	DB	'@'
+	DW	CMD_FEATURE
+CMFEAT:	DB	'FEAT',0
+	DB	0+1+2
+	DB	'Print features of the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_FSYS
+	DB	'FSYS',0
+	DB	0
+	DB	'Set hide of local system files.',0
+	;
+	DB	'@'
+	DW	CMD_GET
+CMDGET:	DB	'GET ',0
+	DB	0+1+2
+	DB	'Receive one file from the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_HELP
+	DB	'HELP ',0
+	DB	0
+	DB	'Print help for a single command. (? for all)',0
+	;
+	DB	'@'
+	DW	CMD_HLOAD
+	DB	'HLOAD ',0
+	DB	0
+	DB	'Load local text file into command history.',0
+	;
+	DB	'@'
+	DW	CMD_HSAVE
+	DB	'HSAVE ',0
+	DB	0
+	DB	'Save command history into local text file.',0
+	;
+	DB	'@'
+	DW	CMD_LANGUAGE
+	DB	'LANGUAGE ',0
+	DB	0+1+2
+	DB	'Specify the lang. of server replies. (opt. ARG)',0
+	;
+	DB	'@'
+	DW	CMD_LCD
+	DB	'LCD ',0
+	DB	0+2
+	DB	'Print or change local working Directory.',0
+	;
+	DB	'@'
+	DW	CMD_LDIR
+	DB	'LDIR ',0
+	DB	0
+	DB	'List content of local Directory. (opt. ARG)',0
+	;
+	DB	'@'
+	DW	CMD_LERA
+	DB	'LERA ',0
+	DB	0
+	DB	'Erase local file(s).',0
+	;
+	DB	'@'
+	DW	CMD_LOG
+	DB	'LOG ',0
+	DB	0
+	DB	'Set command logging into local file.',0
+	;
+	DB	'@'
+	DW	CMD_LUNIQUE
+	DB	'LUNIQUE',0
+	DB	0
+	DB	'Set store unique for local files.',0
+	;
+	DB	'@'
+	DW	CMD_MDIR
+	DB	'MDIR ',0
+	DB	0+1+2
+	DB	'List 8.3 content of remote Directory.(opt. ARG)',0
+	;
+	DB	'@'
+	DW	CMD_MGET
+	DB	'MGET ',0
+	DB	0+1+2
+	DB	'Receive multiple 8.3 files from the server.',0
+		;
+	DB	'@'
+	DW	CMD_MKDIR
+	DB	'MKDIR ',0
+	DB	0+1+2
+	DB	'Create Directory on the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_MPUT
+	DB	'MPUT ',0
+	DB	0+1+2
+	DB	'Send multiple local files to the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_NLIST
+	DB	'NLIST ',0
+	DB	0+1+2
+	DB	'List names of remote Directory. (opt. ARG)',0
+	;
+	DB	'@'
+	DW	CMD_OPEN
+CMOPEN:	DB	'OPEN ',0
+	DB	0
+	DB	'Connect to remote server.',0
+	;
+	DB	'@'
+	DW	CMD_OPTIONS
+	DB	'OPTIONS ',0
+	DB	0+1+2
+	DB	'Specify the behavior of an indicated command.',0
+	;
+	DB	'@'
+	DW	CMD_PASSIVE
+	DB	'PASSIVE',0
+	DB	0
+	DB	'Set active or passive open.',0
+	;
+	DB	'@'
+	DW	CMD_PD
+	DB	'PD',0
+	DB	0+1+2
+	DB	'Change remote working Directory to parent.',0
+	;
+	DB	'@'
+	DW	CMD_PROMPT
+	DB	'PROMPT',0
+	DB	0
+	DB	'Set interactive prompt mode.',0
+	;
+	DB	'@'
+	DW	CMD_PUT
+CMDPUT:	DB	'PUT ',0
+	DB	0+1+2
+	DB	'Send one file to the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_PWD
+CMPWD:	DB	'PWD',0
+	DB	0+1+2
+	DB	'Print working Directory on the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_QUIT
+CMQUIT:	DB	'QUIT',0
+	DB	0+2
+	DB	'Terminate FTP-Session and quit FTP.COM.',0
+	;
+	DB	'@'
+	DW	CMD_QUOTE
+	DB	'QUOTE ',0
+	DB	0+1+2
+	DB	'Send literal FTP-Command to the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_REN
+	DB	'RENAME ',0
+	DB	0+1+2
+	DB	'Rename file on the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_RHELP
+	DB	'RHELP ',0
+	DB	0+1+2
+	DB	'Request help from the remote server. (opt. ARG)',0
+	;
+	DB	'@'
+	DW	CMD_RMDIR
+	DB	'RMDIR ',0
+	DB	0+1+2
+	DB	'Remove Directory on the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_RSTAT
+	DB	'RSTAT ',0
+	DB	0+1+2
+	DB	'Print remote status information. (opt. ARG)',0
+	;
+	DB	'@'
+	DW	CMD_RUNIQUE
+	DB	'RUNIQUE',0
+	DB	0+2
+	DB	'Set store unique for remote files.',0
+	;
+	DB	'@'
+	DW	CMD_SCRIPT
+	DB	'SCRIPT ',0
+	DB	0
+	DB	'Execute local script file.',0
+	;
+	DB	'@'
+	DW	CMD_SITE
+	DB	'SITE ',0
+	DB	0+1+2
+	DB	'Send site specific command to the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_SIZE
+	DB	'SIZE ',0
+	DB	0+1+2
+	DB	'Print size of remote file.',0
+	;
+	DB	'@'
+	DW	CMD_STATUS
+	DB	'STATUS',0
+	DB	0
+	DB	'Print local status information.',0
+	;
+	DB	'@'
+	DW	CMD_SYSTEM
+	DB	'SYSTEM',0
+	DB	0+1+2
+	DB	'Print remote system information.',0
+	;
+	DB	'@'
+	DW	CMD_TYPE
+	DB	'TYPE ',0
+	DB	0+1+2
+	DB	'Print remote file content locally.',0
+	;
+	DB	'@'
+	DW	CMD_USER
+	DB	'USER ',0
+	DB	0+1+2
+	DB	'Identify new user on the remote server.',0
+	;
+	DB	'@'
+	DW	CMD_VERBOSE
+	DB	'VERBOSE',0
+	DB	0
+	DB	'Set verbose output mode.',0
+	;
+	DB	'@'
+	DW	CMD_CMDS
+	DB	'?',0
+CMNULL:	DB	0		;dummy for ALL commands
+	DB	'Print all commands.',0
+	;
+CMDTLG	EQU	$-CMDTAB
+;### alphabetically FTP command functions ##############
+	;
+;-------------------------------
+CMD_ABORT:	;'ABORT'
+	BIT	7,(IY+3)	;Transfer active?
+	RET	Z		;No
+	LD	HL,CMABOR
+	LD	DE,(F_CBUF)
+	CALL	COPCMD		;copy CMD Zstring
+	SET	0,(IY+2)	;Send message -> Reply in GET/PUT Data-Transfer
+	SET	2,(IY+2)	;Set abort request
+	RET
+CMABOR:	DB	'ABOR',0
+;-------------------------------
+CMD_ASCII:	;'ASCII'
+	LD	HL,CMASCI
+	LD	DE,TYPA_RPL
+	JP	REQ_CMD		;without ARG
+TYPA_RPL:	;REPLY 'TYPE A'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	ASC_UP
+	RET
+CMASCI:	DB	'TYPE A',0
+;-------------------------------
+CMD_BINARY:	;'BINARY'
+	LD	HL,CMIMAG
+	LD	DE,TYPI_RPL
+	JP	REQ_CMD		;without ARG
+TYPI_RPL:	;REPLY 'TYPE I'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	LD	HL,200		;"OK"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	RES	6,(IY)		;ASCII ON
+	JR	NZ,TYPEIC	;ERR
+	SET	6,(IY)		;IMAGE ON
+TYPEIC:	JP	MCMRET		;test M-command
+CMIMAG:	DB	'TYPE I',0
+;-------------------------------
+CMD_CD:		;'CD '
+	BIT	2,(IY+1)	;ARG?
+	JP	Z,CMD_PWD	;no->PWD
+	LD	HL,CMCWD
+	LD	DE,RPL_VEROUT
+	JP	REQ_ARG		;with ARG
+CMCWD:	DB	'CWD',0
+;-------------------------------
+CMD_CLOSE:	;'CLOSE'
+	SET	3,(IY+2)	;set close active
+	LD	HL,CMQUIT
+	LD	DE,CLOSE_RPL
+	JP	REQ_CMD		;without ARG
+CLOSE_RPL:
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUT		;always out
+	JR	CLOSUP
+CONERR:	;-> entry 'CONNECT'-ERR
+	LD	DE,F_CMXH	;'connection closed'
+	CALL	ACTOUT
+CLOSUP:	CALL	SCLOSE		;close Csocket (offline)
+	CALL	DCLOSE		;close Dsocket (offline)
+	LD	A,(IY+3)
+	AND	00001100B	;reset Transfer-State
+	LD	(IY+3),A
+	LD	A,(IY+2)
+	AND	00000010B	;reset Remote Command-State
+	LD	(IY+2),A
+	LD	(IY+1),0	;reset Local Command-State
+	RET
+;-------------------------------
+CMD_CLS:	;'CLS'
+	LD	A,CLS
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	RET
+;-------------------------------
+CMD_DEBUG:	;'DEBUG'
+	LD	HL,S_DEBU
+	CALL	COPMSG
+	LD	B,(IY)
+	LD	C,20H		;Bit 5
+	CALL	TSWARG
+	RET	C		;ERR
+	LD	(IY),A
+	AND	C
+	JP	SONOFF		;CY=0!
+;-------------------------------
+CMD_DELETE:	;'DELETE '
+	LD	HL,CMDELE
+	LD	DE,RPL_ALLOUT
+	LD	BC,CAPANM
+	JP	REQ_ARG		;required ARG
+CMDELE:	DB	'DELE',0
+;-------------------------------
+CMD_DIR:	;'DIR '
+	LD	HL,CMLIST
+	LD	(LSTCMD),HL	;load CMD-PTR
+	JP	CLISTI		;->use NLIST
+CMLIST:	DB	'LIST',0
+;-------------------------------
+CMD_EOF:	;'EOF'
+	LD	HL,S_EOFM
+	CALL	COPMSG
+	LD	B,(IY+3)
+	LD	C,8		;Bit 3
+	CALL	TSWARG
+	RET	C		;ERR
+	LD	(IY+3),A
+	AND	C
+	JP	SONOFF
+;-------------------------------
+CMD_FEATURE:	;'FEATURE'
+	LD	HL,CMFEAT
+	LD	DE,RPL_ALLOUT
+	JP	REQ_CMD		;without ARG
+;-------------------------------
+CMD_FSYS:	;'FSYS'
+	LD	HL,S_SYSF
+	CALL	COPMSG
+	LD	B,(IY+3)
+	LD	C,4		;Bit 2
+	CALL	TSWARG
+	RET	C		;ERR
+	LD	(IY+3),A
+	AND	C
+	JP	SONOFF
+;-------------------------------
+CMD_GET:	;'GET '
+	LD	HL,CMRETR	;copy CMD(+ARG) to F_RBUF!
+	LD	DE,(F_RBUF)
+	CALL	COPCMD
+	EX	DE,HL		;HL: dest. ARG address
+	LD	DE,RETR_ARG
+	LD	BC,CAPANM
+	JP	REQ_AIN		;(+ARG) or new ARG to F_RBUF!
+RETR_ARG:
+	LD	HL,(TARG1)	;ARG source address
+	CALL	TFOLDR		;search filename wo folder
+	RET	C		;no filename
+	LD	DE,PGSSTR
+	CALL	TSTDNM		;test and load PGSSTR
+	JR	C,GTNWNM	;ERR length, illegal char's
+	JR	Z,MGETIN	;local filename Ok
+GTNWNM:	;get new local filename
+	RES	7,(IY)		;reset OUT message
+	LD	HL,(F_LBUF)	;dummy store ARG
+	LD	DE,RETR_LFN
+	LD	BC,CALFIL
+	JP	REQ_AIN		;input new filename
+RETR_LFN:
+	CALL	TCLFNM		;test and load PGSSTR
+	RET	C		;ERR length, illegal char's
+	LD	DE,XE_AMFN
+	JP	NZ,ACTOUT	;ambiguous filename
+MGETIN:	;
+	;   ### Entry MGET ###
+	;   PGSSTR = local FCB-filename
+	;   F_RBUF = 'RETR'-command Zstring
+	;
+	CALL	DSMCLR		;clear DS buffer
+	CALL	DSFCBI		;init Dsocket-FCB
+	LD	(CONTMP),BC	;FIOCTL
+	LD	(CONTMP+2),DE	;FIOFCB
+	CALL	DTRSTR		;load DSocket(IX)/reset Transfer-State
+	CALL	_F$OPENT
+	JR	NZ,CMGTFC	;Ok: file does not exist
+	BIT	1,(IY)		;Lunique ON?
+	LD	DE,XE_LFNU
+	CALL	NZ,ACTOUT	;activate message
+	JP	NZ,CMRTRS	;yes->Skip file
+	BIT	3,(IY)		;prompting ON?
+	JR	Z,CMGTDL	;no->Get file exists
+	;ask for erase
+	LD	HL,CMRTDI
+	LD	DE,XE_FFEX
+	LD	A,40H+10H	;One Char input ON
+	CALL	RDREXE		;CON wait ON
+	RET
+CMRTDI:	PUSH	AF		;Key-Code
+	LD	A,40H+10H	;One Char input OFF
+	CALL	RDRTGL		;CON wait OFF
+	POP	AF
+	AND	5FH		;UCASE
+	CP	'Y'
+	JP	NZ,CMRTRS	;<>'Y'->Skip file
+CMGTDL:	LD	IX,(FDSBUF)	;Dsocket
+	SET	3,(IX+F_SOST)	;Get file exists
+	LD	DE,(CONTMP+2)	;FIOFCB
+	CALL	_INITFCB	;reset
+	BIT	1,(IY+3)	;Recv D/T?
+	JR	Z,CMGTFC	;->OFF
+	LD	HL,TEMP
+	CALL	RDSTAMP		;get DS
+CMGTFC:	;copy Get file name / open ftp-file
+	PUSH	DE
+	LD	HL,FGFFCB-FIOFCB
+	ADD	HL,DE
+	LD	(DSCKNM),HL	;for close Out
+	EX	DE,HL
+	LD	BC,12
+	LDIR
+	POP	DE		;FIOFCB
+	LD	HL,F_GFNM
+	CALL	CSPFCB
+	LD	DE,(CONTMP)	;FIOCTL
+	CALL	_FYO$OPEN	;deletes existing file!
+	JR	NZ,CMGTFO	;open file Ok
+	SET	1,(IX+F_SOST)	;activate Transfer ERR
+	LD	DE,XE_DSKF
+	CALL	ACTOUT		;activate message
+	JP	CMRTRE		;ERR DIR full
+CMGTFO:	SET	2,(IX+F_SOST)	;ftp-file open
+	BIT	4,(IY)
+	JR	NZ,CMGPSV
+	;Active mode -> 'PORT'
+	CALL	PORTUP		;prepare 'PORT'
+	JP	C,CMRTRE	;ERR->close/del ftp-file!
+	LD	HL,(F_CBUF)	;prepared cmd
+	LD	DE,CGPRTR
+	JP	REQ_CMD		;without ARG
+CGPRTR:	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	LD	HL,200		;"OK"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	JP	NZ,CMRTRE	;ERR->close/del ftp-file!
+	JR	CGOPDC
+CMGPSV:	;Passive mode -> 'PASV'
+	LD	HL,CMPASV
+	LD	DE,CGPASR
+	JP	REQ_CMD		;without ARG
+CGPASR:	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	PASVUP
+	JP	C,CMRTRE	;ERR->close/del ftp-file!
+CGOPDC:	;open Data-Connection
+	CALL	DSCKOP
+	JP	C,CMRTRE	;ERR->close/del ftp-file!
+	;RETR
+	LD	HL,(F_RBUF)	;read back from F_RBUF
+	LD	DE,RETR_RPL
+	JP	REQ_CMD		;without ARG
+RETR_RPL:	;REPLY 'RETR'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	LD	DE,(RPLYCD)
+	LD	HL,550		;file not found  (DIR entry NLIST!)
+	OR	A
+	SBC	HL,DE
+	JR	NZ,CMRTRR
+	CALL	DCLOSE		;close open Dsocket!
+	LD	DE,(CONTMP+2)	;FIOFCB
+	CALL	_F$DELETE	;->del ftp-file and continue
+	JP	CMRTRS
+CMRTRR:	EX	DE,HL
+	LD	DE,200
+	OR	A
+	SBC	HL,DE		;1xx Code?
+	JR	NC,CMRTRE	;ERR->close/del ftp-file!
+	;activate Data-Transfer and Ret-Address
+	SET	0,(IY+1)	;rebuild cmdline
+	LD	HL,WRDATA	;write Data to opened file
+	LD	DE,REDATA_RPL	;Transfer return
+	JP	TROPEN		;Transfer ON
+REDATA_RPL:	;REPLY 'RETR DATA'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUT		;always out
+	;test OK replies
+	LD	DE,(RPLYCD)
+	LD	HL,226		;closing data connection, file action successful
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMRTOK
+	LD	HL,250		;file action okay, completed
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMRTOK
+	;activate ERR replies
+	LD	IX,(FDSBUF)	;restore Dsocket
+	SET	1,(IX+F_SOST)	;set ERR: del ftp-file/break M-command
+CMRTOK:	BIT	2,(IY+2)	;abort sent?
+	JR	Z,CMRTRC	;no->continue
+	LD	HL,ABORT_RPL
+	LD	(RPLSUB),HL
+	JP	REQRIN		;get reply
+ABORT_RPL:	;REPLY 'ABOR'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUT		;always out
+	JR	CMRTRC		;continue
+CMRTRE:	LD	IX,(FDSBUF)	;restore Dsocket
+	SET	1,(IX+F_SOST)	;set ERR: del ftp-file/break M-command
+CMRTRC:	CALL	DCLOSE		;close Dsocket, PA: Dsocket in IX!
+	CALL	MSGOUT		;process pending Err-MSG
+	PUSH	IX
+	POP	HL
+	LD	DE,FIOCTL
+	ADD	HL,DE
+	EX	DE,HL		;FIOCTL
+	BIT	2,(IX+F_SOST)	;ftp-file open?
+	JP	Z,CMRTRS	;no->return
+	CALL	_FYO$CLOSE	;yes->close
+	LD	HL,10
+	ADD	HL,DE
+	LD	(CONTMP+2),HL
+	EX	DE,HL		;DE=FIOFCB
+	LD	HL,FGFFCB-FIOFCB
+	ADD	HL,DE		;HL=FGFFCB
+	BIT	1,(IX+F_SOST)	;Transfer ERR?
+	JR	NZ,CMRTRD	;yes->Del. ftp-file
+	BIT	3,(IX+F_SOST)	;Get file exists?
+	JR	Z,CMRTRN	;no->Rename
+	EX	DE,HL
+	XOR	A
+	CALL	_F$SCFA		;clear all ATTR of existing Get file
+	EX	DE,HL
+	JR	NZ,CMRTRD	;ERR
+	EX	DE,HL
+	CALL	_F$DELETE	;del. existing Get file
+	EX	DE,HL
+	JR	NZ,CMRTRP	;ERR
+CMRTRN:	CALL	_F$RENAME	;ftp-file (DE) -> Get file (HL)
+	JR	NZ,CMRTRT	;Ok
+CMRTRD:	CALL	_F$DELETE	;del. ftp-file
+CMRTRP:	SET	1,(IX+F_SOST)	;ERR: break M-command
+	JR	CMRTRS
+CMRTRT:	PUSH	DE
+	LD	BC,12
+	LDIR			;rebuild Get file FCB
+	POP	DE
+	CALL	_INITFCB	;reset
+	XOR	A
+	CALL	_F$SCFA		;clear all ATTR of (new) Get file
+	BIT	1,(IY+3)	;Recv D/T?
+	JR	Z,CMRTRS	;->OFF
+	BIT	3,(IX+F_SOST)	;Get file exists?
+	JR	NZ,CMRTDS	;yes->retain existing DS
+	LD	HL,TEMP
+	CALL	RDSTAMP		;get new DS
+CMRTDS:	CALL	DSTEST		;test DS data
+	JP	C,CMRTRS	;->ERR
+CMD_MDTM:	;MDTM
+	LD	HL,CMMDTM
+	LD	DE,(F_RBUF)	;replace cmd in F_RBUF
+	PUSH	DE
+	CALL	BCOPY4
+	POP	HL
+	LD	DE,MDTM_RPL
+	JP	REQ_CMD		;without ARG
+MDTM_RPL:	;REPLY 'MDTM'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	LD	HL,(RPLYCD)
+	LD	DE,213
+	OR	A
+	SBC	HL,DE
+	JR	NZ,CMRTRS	;ERR
+	LD	HL,(F_MBUF)	;Message buffer
+	LD	BC,4
+	ADD	HL,BC		;YYYYMMDDhhmmss
+	PUSH	HL
+	LD	DE,TEMP+10	;BCD Modified
+	CALL	AS2BCD		;->write
+	POP	HL
+	LD	IX,(FDSBUF)	;restore Dsocket
+	BIT	3,(IX+F_SOST)	;Get file exists?
+	JR	NZ,MDTMNC	;yes->retain Create DS
+	LD	DE,TEMP		;BCD Created
+	CALL	AS2BCD		;->write
+MDTMNC:	LD	DE,(CONTMP+2)	;Get file FCB
+	LD	HL,TEMP
+	CALL	WRSTAMP		;put stamps
+	CALL	NZ,DATEMS	;date message
+CMRTRS:	JP	MCMRET		;test M-command
+CMRETR:	DB	'RETR',0
+CMMDTM:	DB	'MDTM',0
+;-------------------------------
+CMD_HELP:	;'HELP '
+	BIT	2,(IY+1)	;ARG?
+	JP	Z,CMD_CMDS	;no->cmd's only
+	LD	DE,(TARG1)	;ARG address
+	LD	HL,CMDTAB
+	LD	BC,CMDTLG
+	LD	A,(DE)
+	CP	'?'
+	JR	Z,CHELPA
+	;one command only
+	LD	A,'@'
+	CALL	ZSTRFD		;search command
+	JP	NC,CHELPO	;cmd help out
+	LD	DE,F_CMXJ	;'unknown command'
+CHELPM:	CALL	ZKOUT
+	CALL	NEWLN
+	RET
+CHELPA:	;all commands
+	INC	DE
+	LD	A,(DE)
+	OR	A
+	LD	DE,F_CMXP	;'Invalid arg'
+	JR	NZ,CHELPM
+	LD	(CONTMP),HL	;save CMDTAB
+	LD	(CONTMP+2),BC	;save CMDTLG
+CHLPIC:	CALL	CHELPU		;CMD's out
+	RET	C		;ready
+	BIT	6,(IY+4)	;script active?
+	JR	NZ,CHLPIC	;yes
+	;wait for input
+	LD	HL,CHLPIN
+	LD	DE,F_CMXW
+	LD	A,40H+10H	;One Char input ON
+	CALL	RDREXE		;CON wait ON
+	RET
+CHLPIN:	LD	A,40H+10H	;One Char input OFF
+	CALL	RDRTGL		;CMD-Help OFF
+	JR	CHLPIC
+;-------------------------------
+CMD_HLOAD:	;'HLOAD'
+	LD	HL,(F_LBUF)	;write to F_LBUF !
+	LD	DE,HLOAD_ARG
+	LD	BC,CALFIL
+	JP	REQ_AIN		;get ARG
+HLOAD_ARG:
+	CALL	TNARGI
+	RET	C		;no ARG
+	CALL	TESTDU		;test and get DU:
+	RET	C		;Err
+	LD	(HIF_DU),BC	;new or current
+	LD	DE,SPCSTR
+	CALL	TSTDNM		;test and load SPCSTR
+	RET	C		;ERR length, illegal char's
+	LD	DE,XE_AMFN
+	JP	NZ,ACTOUT	;ambiguous filename
+	LD	HL,SPCSTR
+	LD	DE,HIFFCB
+	CALL	CSPFCB		;copy to FCB
+	LD	DE,HIFSFT
+	CALL	Z,LOADST	;load standard FT
+	LD	BC,(HIF_DU)
+	CALL	LOGTST		;login
+	LD	DE,HIFCTL
+	CALL	_FYI$OPEN
+	LD	DE,XE_LFNF
+	CALL	Z,ACTOUT	;ERR
+	JR	Z,HLOAD6
+HLAUTO:	;### autoload ###
+	LD	A,(IY+4)
+	PUSH	AF		;save F_FEAT
+	SET	6,(IY+4)	;like scripting ON
+	LD	HL,(F_HBUF)
+	PUSH	HL
+	LD	BC,F_HSIZ-1	;without 0-Byte!
+	ADD	HL,BC
+	EX	DE,HL		;max. ptr
+	POP	HL
+	LD	C,(HL)
+	PUSH	BC		;save first byte
+	DEC	HL
+HLOAD1:	INC	HL
+	PUSH	DE		;max. ptr
+	PUSH	HL		;running ptr
+	EX	DE,HL
+	OR	A
+	SBC	HL,DE		;available size
+	LD	BC,F_ISIZ-1	;max. size
+	PUSH	HL
+	SBC	HL,BC		;av. size - max. size
+	POP	HL
+	JR	NC,HLOAD2	;max. remains
+	LD	B,H
+	LD	C,L		;replace by av.
+HLOAD2:	POP	HL
+	LD	DE,HIFCTL
+	CALL	HIFRDL		;read line
+	LD	A,B
+	OR	C
+	PUSH	AF
+	LD	DE,HIFCTL
+	CALL	Z,_FYI$CLOSE
+	POP	AF
+	POP	DE
+	JR	Z,HLOAD3	;F_HBUF full
+	BIT	6,(IY+4)	;closed?
+	JR	NZ,HLOAD1	;no->next line
+HLOAD3:	POP	BC
+	LD	DE,(F_HBUF)
+	OR	A
+	SBC	HL,DE		;filedata?
+	JR	NZ,HLOAD4	;yes
+	EX	DE,HL
+	LD	(HL),C		;restore first byte
+	JR	HLOAD5
+HLOAD4:	INC	HL
+	LD	(HL),0		;terminate history
+HLOAD5:	POP	AF
+	LD	(IY+4),A	;restore F_FEAT
+HLOAD6:	LD	BC,(CUR_DU)	;-> current
+	CALL	LOGTST
+	RET
+;-------------------------------
+CMD_HSAVE:	;'HSAVE'
+	LD	HL,(F_LBUF)	;write to F_LBUF !
+	LD	DE,HSAVE_ARG
+	LD	BC,CALFIL
+	JP	REQ_AIN		;get ARG
+HSAVE_ARG:
+	CALL	TNARGI
+	RET	C		;no ARG
+	CALL	TESTDU		;test and get DU:
+	RET	C		;Err
+	LD	(HIF_DU),BC	;new or current
+	LD	DE,SPCSTR
+	CALL	TSTDNM		;test and load SPCSTR
+	RET	C		;ERR length, illegal char's
+	LD	DE,XE_AMFN
+	JP	NZ,ACTOUT	;ambiguous filename
+	LD	HL,SPCSTR
+	LD	DE,HIFFCB
+	CALL	CSPFCB		;copy to FCB
+	PUSH	DE
+	LD	DE,HIFSFT
+	CALL	Z,LOADST	;load standard FT
+	POP	DE
+	LD	BC,(HIF_DU)
+	CALL	LOGTST
+	CALL	_F$OPENT
+	JR	NZ,HSAVE0	;Ok: file does not exist
+	BIT	6,(IY+4)	;script active?
+	JR	NZ,HSAVE0	;yes->open (delete)
+HSAVER:	;ask for erase
+	LD	HL,CMHSDI
+	LD	DE,XE_SFEX
+	LD	A,40H+10H	;One Char input ON
+	CALL	RDREXE		;CON wait ON
+	RET
+CMHSDI:	PUSH	AF		;Key-Code
+	LD	A,40H+10H	;One Char input OFF
+	CALL	RDRTGL		;CON wait OFF
+	POP	AF
+	AND	5FH		;UCASE
+	CP	'Y'
+	JR	Z,HSAVE0
+	CP	'N'
+	JR	Z,HSAVE8
+	CALL	LNVCLR
+	JR	HSAVER		;repeat prompt
+HSAVE0:	LD	DE,HIFCTL
+	CALL	_FYO$OPEN	;deletes existing file!
+	CALL	Z,HSAVEA
+	JR	Z,HSAVE8	;ERR
+	LD	BC,F_HSIZ-1	;without 0-Byte!
+	LD	HL,(F_HBUF)
+	XOR	A
+HSAVE1:	CP	(HL)
+	JR	Z,HSAVE2	;last hcmd
+	CPIR
+	JP	PE,HSAVE1	;next hcmd
+HSAVE2:	DEC	HL
+	LD	BC,(F_HBUF)
+HSAVE3:	DEC	HL
+	PUSH	HL
+	XOR	A		;A=0!
+	SBC	HL,BC		;first entry?
+	POP	HL
+	JR	Z,HSAVE4	;->yes
+	DEC	HL
+	CP	(HL)		;previous entry?
+	INC	HL
+	JR	NZ,HSAVE3	;->no
+HSAVE4:	PUSH	HL		;save entry
+	DEC	HL
+HSAVE5:	INC	HL
+	LD	A,(HL)
+	OR	A
+	JR	NZ,HSAVE6
+	LD	A,CR		;0->CRLF
+	CALL	HSAVE9
+	JR	C,HSAVE7
+	LD	A,LF
+	CALL	HSAVE9
+	JR	C,HSAVE7
+	POP	HL
+	PUSH	HL
+	SBC	HL,BC		;first entry?
+	JR	Z,HSAVE7	;yes->close
+	POP	HL
+	JR	HSAVE3		;next entry backwards
+HSAVE6:	CALL	HSAVE9
+	JR	NC,HSAVE5
+HSAVE7:	CALL	_FYO$CLOSE
+	POP	HL
+HSAVE8:	LD	BC,(CUR_DU)	;-> current
+	CALL	LOGTST
+	RET
+HSAVE9:	CALL	_FY$PUT
+	SCF
+	CCF			;CY=0
+	RET	NZ
+HSAVEA:	PUSH	DE
+	LD	DE,XE_DSKF	;ERR
+	CALL	ACTOUT		;CY=1!
+	POP	DE
+	RET
+;-------------------------------
+CMD_LANGUAGE:	;'LANGUAGE '
+	LD	HL,CMLANG
+	LD	DE,RPL_ALLOUT
+	JP	REQ_OPT		;optional ARG
+CMLANG:	DB	'LANG',0
+;-------------------------------
+CMD_LCD:	;'LCD '
+	BIT	2,(IY+1)	;ARG?
+	JR	NZ,CDUARG	;yes
+	LD	DE,(F_LBUF)	;MSG buffer
+	CALL	ACTOUT		;activate
+	LD	HL,F_CMXM
+	CALL	COPCMD
+	LD	HL,(CUR_DU)
+	EX	DE,HL
+	CALL	WRCDIR
+	RET
+CDUARG:	LD	HL,(TARG1)	;ARG source address
+	LD	DE,HOMEDU
+	CALL	CMP5BT
+	JR	NZ,CDUTST
+	CALL	_GETUD		;restore saved DU:
+	CALL	_RETUD		;get
+	JR	CDUSLD		;->load
+CDUTST:	CALL	TSTDU2		;activates ERR-Msg
+	RET	C		;ERR
+CDUSLD:	LD	(CUR_DU),BC
+	CALL	_LOGUD
+	RET
+HOMEDU:	DB	'HOME',0
+;-------------------------------
+CMD_LDIR:	;'LDIR '
+	CALL	RDLDIR		;read local DIR
+	RET	C		;ERR with message
+	RES	4,(IY+3)	;remote DIR OFF
+	LD	DE,0		;all files OFF
+CMLDIN:	;
+	;   ### Entry MDIR ###
+	;    HL = PTR to first 16 byte entry
+	;    DE = 0 or number of all files
+	;    BC = number of files
+	;F_VBUF = DIR entries
+	;
+	CALL	DRFILO		;print number
+	RET	C		;=0
+	CALL	LNEWLN
+	XOR	A		;reset Out Counter
+CMLDI1:	LD	E,A
+	LD	A,(CUR_DU)
+	CP	(HL)		;current User?
+	LD	A,E
+	JR	NZ,CMLDI3	;no
+	PUSH	HL
+	LD	D,H
+	LD	E,L
+	INC	DE
+	BIT	4,(IY+3)
+	JR	NZ,CMLDI2	;remote DIR ON
+	PUSH	BC		;local entry
+	LD	HL,(F_LBUF)
+	CALL	MFN1##
+	LD	D,H
+	LD	E,L
+	LD	BC,12
+	ADD	HL,BC
+	LD	(HL),0		;terminate!
+	POP	BC
+CMLDI2:	LD	H,D
+	LD	L,E		;ptr
+	CALL	ZSCMDO		;out (16 char's)
+	INC	A		;counter+1
+	BIT	7,(IY+4)
+	CALL	NZ,LOGDIR
+	POP	HL
+CMLDI3:	LD	DE,16
+	ADD	HL,DE
+	DEC	BC		;files-1
+	LD	E,A
+	LD	A,B
+	OR	C
+	LD	A,E
+	CALL	Z,LNEWLN
+	RET	Z		;ready
+	CP	115		;23*5 line*entries (80 screen) <==========================================
+	JR	NZ,CMLDI1	;next entry
+	XOR	A		;reset out Counter
+	BIT	6,(IY+4)	;script active?
+	JR	NZ,CMLDI1	;yes->don't wait
+	;wait for input
+	LD	(CONTMP),HL	;save address
+	LD	(CONTMP+2),BC	;save file counter
+	LD	(CONTMP+4),A	;save out counter
+	LD	HL,CMLDI4
+	LD	DE,F_CMXX
+	LD	A,40H+10H	;One Char input ON
+	CALL	RDREXE		;CON wait ON
+	RET
+CMLDI4:	PUSH	AF		;Key-Code
+	LD	A,40H+10H	;One Char input OFF
+	CALL	RDRTGL		;CON wait OFF
+	POP	AF
+	CP	ETX
+	RET	Z		;break
+	CP	ESC
+	RET	Z		;break
+	CALL	LNVCLR
+	LD	HL,(CONTMP)
+	LD	BC,(CONTMP+2)
+	LD	A,(CONTMP+4)	;restore
+	JR	CMLDI1		;cont.
+;-------------------------------
+CMD_LERA:	;'LERA '
+	LD	HL,(F_LBUF)	;dummy store ARG
+	LD	DE,LERA_ARG
+	LD	BC,CALMSK
+	JP	REQ_AIN		;get ARG
+LERA_ARG:
+	CALL	RDMDIR		;read masked DIR
+	RET	C		;ERR with message
+	LD	DE,0		;all files OFF
+	CALL	DRFILO		;print number
+	RET	C		;=0
+	BIT	3,(IY)		;prompting ON?
+	JR	NZ,CMLER3	;yes->ask for each file
+	BIT	6,(IY+4)	;script active?
+	JR	Z,CMLER5	; no->ask for all files
+	DEC	BC
+	LD	A,B
+	OR	C
+	INC	BC
+	JR	NZ,CMLER5	;yes->ask for more than one file
+CMLER3:	CALL	LNEWLN
+CMLER4:	;HL-address / BC-file counter
+	LD	A,(CUR_DU)
+	CP	(HL)		;current User?
+	JR	NZ,CMLER8	;no
+	BIT	3,(IY)		;prompting OFF?
+	JR	Z,CMLER7	;del
+CMLERR:	;ask for erase
+	LD	D,H
+	LD	E,L
+	INC	DE
+	CALL	PFN1##		;FN.FT out
+CMLER5:	LD	(CONTMP),HL	;save address
+	LD	(CONTMP+2),BC	;save counter
+	LD	HL,CMLER6
+	LD	DE,F_CMXZ	;'del ?'
+	LD	A,40H+10H	;One Char input ON
+	CALL	RDREXE		;CON wait ON
+	RET
+CMLER6:	PUSH	AF		;Key-Code
+	LD	A,40H+10H	;One Char input OFF
+	CALL	RDRTGL		;CON wait OFF
+	POP	AF
+	LD	HL,(CONTMP)
+	LD	BC,(CONTMP+2)
+	CP	ETX
+	JR	Z,CMLER9	;break
+	CP	ESC
+	JR	Z,CMLER9	;break
+	AND	5FH		;UCASE
+	CP	'Y'
+	JR	Z,CMLER7	;del
+	BIT	3,(IY)		;prompting OFF?
+	JR	Z,CMLER9	;stop here!
+	CP	'N'
+	JR	Z,CMLER8	;skip
+	CALL	LNVCLR
+	JR	CMLERR		;repeat prompt
+CMLER7:	;erase file (HL)
+	PUSH	HL
+	PUSH	BC
+	PUSH	IY
+	LD	DE,(F_LBUF)	;write to F_LBUF
+	PUSH	DE
+	LD	BC,12
+	LDIR
+	POP	DE
+	CALL	_INITFCB
+	XOR	A		;clear all ATTR
+	CALL	_F$SCFA
+	CALL	_F$DELETE
+	INC	DE
+	LD	HL,35
+	ADD	HL,DE
+	PUSH	HL
+	CALL	MWFNFT		;write FN.FT
+	LD	HL,F_CMX3
+	CALL	COPCMD		;'erased.'
+	CALL	MNEWLN
+	POP	DE
+	CALL	LZKOUT
+	POP	IY
+	POP	BC
+	POP	HL
+CMLER8:	LD	DE,16
+	ADD	HL,DE		;next entry
+	DEC	BC		;counter-1
+	LD	A,B
+	OR	C
+	JP	NZ,CMLER4	;next entry
+CMLER9:	RET
+;-------------------------------
+CMD_LOG:	;'LOG '
+	BIT	2,(IY+1)
+	JR	NZ,CMDLO2	;ARG found
+	BIT	7,(IY+4)	;OFF?
+CMDLO1:	CALL	NZ,LOGFCL	;close open! file
+	CALL	WLGFST		;write state
+	RET
+CMDLO2:	BIT	7,(IY+4)	;ON?
+	CALL	NZ,CMDLO1	;yes->close
+	CALL	MSGOUT		;process OUT message
+	LD	HL,(TARG1)	;ARG source address
+	CALL	TESTDU		;test and get DU:
+	RET	C		;Err
+	LD	(LOG_DU),BC	;new or current
+	LD	DE,SPCSTR
+	CALL	TSTDNM		;test and load SPCSTR
+	RET	C		;ERR length, illegal char's
+	LD	DE,XE_AMFN
+	JP	NZ,ACTOUT	;ambiguous filename
+	LD	HL,SPCSTR
+	LD	DE,LOGFCB
+	CALL	CSPFCB		;copy to FCB
+	PUSH	DE
+	LD	DE,LOGSFT
+	CALL	Z,LOADST	;load standard FT
+	POP	DE
+	LD	BC,(LOG_DU)
+	CALL	LOGTST
+	CALL	_F$OPENT
+	JR	NZ,CMDLO6	;Ok: file does not exist
+	BIT	6,(IY+4)	;script active?
+	JR	NZ,CMDLO6	;yes->open (delete)
+CMDLOR:	;ask for erase
+	LD	HL,CMDLO4
+	LD	DE,XE_LFEX
+	LD	A,40H+10H	;One Char input ON
+	CALL	RDREXE		;CON wait ON
+	RET
+CMDLO4:	PUSH	AF		;Key-Code
+	LD	A,40H+10H	;One Char input OFF
+	CALL	RDRTGL		;CON wait OFF
+	POP	AF
+	AND	5FH		;UCASE
+	CP	'Y'
+	JR	Z,CMDLO6
+	CP	'N'
+	JR	Z,CMDLO5
+	CALL	LNVCLR
+	JR	CMDLOR		;repeat prompt
+CMDLO5:	LD	BC,(CUR_DU)	;-> current
+	CALL	LOGTST
+	RET
+CMDLO6:	LD	DE,LOGCTL
+	CALL	_FYO$OPEN	;deletes existing file!
+	PUSH	AF
+	CALL	CMDLO5
+	POP	AF
+	LD	DE,XE_DSKF
+	JP	Z,ACTOUT	;ERR
+	SET	7,(IY+4)	;logging ON
+	JP	WLGFST		;write state
+;-------------------------------
+CMD_LUNIQUE:	;'LUNIQUE'
+	LD	HL,S_LUNI
+	CALL	COPMSG
+	LD	B,(IY)
+	LD	C,2		;Bit 1
+	CALL	TSWARG
+	RET	C		;ERR
+	LD	(IY),A
+	AND	C
+	JP	SONOFF
+;-------------------------------
+CMD_MDIR:	;'MDIR '
+	SET	5,(IY+3)	;M-command ON
+	CALL	MDINIT		;init NLST-Save
+	LD	HL,MDLRET
+	LD	(MCRETA),HL	;PTR to M-command return
+	JP	CMD_NLIST	;use NLIST with filemask from F_IBUF
+MDLRET:	LD	IX,(FDSBUF)	;Dsocket
+	RES	5,(IY+3)	;M-command OFF
+	BIT	1,(IX+F_SOST)	;TPA-Overflow?
+	RET	NZ		;yes->break
+	SET	4,(IY+3)	;remote DIR ON
+	LD	HL,(F_VBUF)	;first entry
+	LD	DE,(TEMP+12)	;all files counter
+	LD	BC,(TEMP+4)	;cp/m files counter
+	JP	CMLDIN		;use LDIR
+;-------------------------------
+CMD_MGET:	;'MGET '
+	LD	HL,(F_RBUF)	;write to F_RBUF !
+	LD	DE,RETR_RFM
+	LD	BC,CALMSK
+	JP	REQ_AIN		;get remote-filemask
+RETR_RFM:
+	CALL	TNARGI
+	RET	C		;no ARG
+	SET	2,(IY+1)	;ARG ON!
+	LD	HL,(F_RBUF)
+	INC	HL		;skip SPACE
+	LD	(TARG1),HL
+	SET	5,(IY+3)	;M-command ON
+	CALL	MDINIT		;init NLST-Save
+	LD	HL,MGLRET
+	LD	(MCRETA),HL	;PTR to M-command return
+	JP	CMD_NLIST	;use NLIST with filemask from F_RBUF
+MGLRET:	LD	IX,(FDSBUF)	;Dsocket
+	BIT	1,(IX+F_SOST)	;TPA-Overflow?
+	JR	NZ,MGEERR	;yes->break M-command
+	LD	HL,(F_VBUF)	;first entry
+	LD	DE,(TEMP+12)	;all files counter
+	LD	BC,(TEMP+4)	;cp/m files counter
+	CALL	DRFILO		;print number
+	JR	C,MGEERR	;=0
+	CALL	LNEWLN
+	LD	(MFILES),BC	;save
+	CALL	PUDPTR		;shift DIR-PTR
+MGETNX:	LD	(MCDIRA),HL	;M-command DIR address
+	LD	(MCDIRN),BC	;M-command file counter
+	INC	HL		;skip User
+	;make 'RETR FN.FT' command
+	PUSH	HL
+	LD	HL,CMRETR
+	LD	DE,(F_RBUF)	;write CMD to F_RBUF!
+	CALL	COPCMD
+	LD	A,' '
+	LD	(DE),A		;1 SPC between CMD and ARG
+	INC	DE
+	POP	HL
+	PUSH	DE
+	CALL	COPCMD		;copy original! FN.FT+0 from FTP-DIR
+	;read FN.FT back to PGSSTR
+	POP	HL
+	PUSH	HL
+	LD	DE,PGSSTR	;local FCB filename
+	CALL	GETSPC		;tested! FN.FT+0 to 8.3+0 string
+	LD	DE,CMDGET
+	CALL	LZKOUT		;'GET '
+	POP	DE
+	CALL	LZKOUT		;FN.FT
+	CALL	LNEWLN
+	LD	HL,MGERET
+	LD	(MCRETA),HL	;PTR to M-command return
+	JP	MGETIN		;use GET
+MGERET:	LD	IX,(FDSBUF)	;load Dsocket
+	CALL	MSGOUT		;process OUT message
+	LD	HL,(MCDIRA)	;M-command DIR address
+	LD	BC,(MCDIRN)	;M-command file counter
+	BIT	1,(IX+F_SOST)	;Transfer ERR?
+	JR	NZ,MGRPTR	;yes->break M-command
+	LD	DE,16
+	ADD	HL,DE		;next entry
+	DEC	BC		;counter-1
+	LD	A,B
+	OR	C
+	JR	Z,MGRPTR	;ready
+	BIT	2,(IY+2)	;Abort requested?
+	JR	Z,MGETNX	;no->next entry
+MGRPTR:	CALL	MCMEND
+MGEERR:	RES	2,(IY+2)	;reset abort request
+	RES	5,(IY+3)	;M-command OFF
+	RET
+;-------------------------------
+CMD_MKDIR:	;'MKDIR '
+	LD	HL,CMMKD
+	LD	DE,RPL_ALLOUT
+	LD	BC,CAPATH
+	JP	REQ_ARG		;required ARG
+CMMKD:	DB	'MKD',0
+;-------------------------------
+CMD_MPUT:	;'MPUT '
+	LD	HL,(F_RBUF)	;dummy store ARG
+	LD	DE,STOR_LFM
+	LD	BC,CALMSK
+	JP	REQ_AIN		;get local-filemask
+STOR_LFM:
+	CALL	TNARGI
+	RET	C		;no ARG
+	SET	2,(IY+1)	;ARG ON!
+	CALL	RDLDIR		;read local DIR with local-filemask
+	RET	C		;ERR with message
+	LD	DE,0		;all files OFF
+	CALL	DRFILO		;print number
+	RET	C		;=0
+	CALL	LNEWLN
+	SET	5,(IY+3)	;M-command ON
+	LD	(MFILES),BC	;save
+	CALL	PUDPTR		;shift DIR-PTR
+MPUTNX:	LD	A,(CUR_DU)
+	CP	(HL)		;current User?
+	JR	NZ,MPUSKP	;no->Skip entry
+	CALL	DTRSTR		;load DSocket/reset Transfer-State
+	LD	(MCDIRA),HL	;M-command DIR address
+	LD	(MCDIRN),BC	;M-command file counter
+	INC	HL		;skip User
+	;make 'RNTO FN.FT' command
+	PUSH	HL
+	LD	HL,CMRNTO
+	LD	DE,(F_RBUF)	;write CMD to F_RBUF
+	CALL	COPCMD
+	LD	A,' '
+	LD	(DE),A		;1 SPC between CMD and ARG
+	INC	DE
+	POP	HL		;DIR-FCB filename
+	PUSH	DE
+	LD	B,8
+	CALL	FCBNCP		;write FN to F_RBUF
+	LD	A,'.'
+	LD	(DE),A		;write "." to F_RBUF
+	INC	DE
+	LD	B,3
+	CALL	FCBNCP		;write FT to F_RBUF
+	XOR	A
+	LD	(DE),A		;delimiter
+	;read FN.FT back to PGSSTR
+	POP	HL
+	PUSH	HL
+	LD	DE,PGSSTR	;local FCB filename
+	CALL	GETSPC		;FN.FT to 8.3+0 string (CY=Err!)
+	LD	DE,CMDPUT
+	CALL	LZKOUT		;'PUT '
+	POP	DE
+	CALL	LZKOUT		;FN.FT
+	CALL	LNEWLN
+	LD	DE,XE_ILFN
+	CALL	C,ACTOUT	;activate OUT message
+	JR	C,MPURET	;Err local FN.FT
+	LD	HL,MPURET
+	LD	(MCRETA),HL	;PTR to M-command return
+	JP	MPUTIN		;use PUT
+MPURET:	LD	IX,(FDSBUF)	;load Dsocket
+	CALL	MSGOUT		;process OUT message
+	LD	HL,(MCDIRA)	;M-command DIR address
+	LD	BC,(MCDIRN)	;M-command file counter
+	BIT	1,(IX+F_SOST)	;Transfer ERR?
+	JR	NZ,MPRPTR	;yes->break M-command
+MPUSKP:	LD	DE,16
+	ADD	HL,DE		;next entry
+	DEC	BC		;counter-1
+	LD	A,B
+	OR	C
+	JR	Z,MPRPTR	;ready
+	BIT	2,(IY+2)	;Abort requested?
+	JR	Z,MPUTNX	;no->next entry
+MPRPTR:	CALL	MCMEND
+MPUERR:	RES	2,(IY+2)	;reset abort request
+	RES	5,(IY+3)	;M-command OFF
+	RET
+;-------------------------------
+CMD_NLIST:	;'NLIST '
+	;-> entry from MDIR/MGET/(M)PUT
+	LD	HL,CMNLST
+	LD	(LSTCMD),HL	;load CMD-PTR
+CLISTI:	;-> entry from DIR/TYPE
+	LD	A,(F_STAT)
+	LD	(CFSTAT),A	;save Data-Type
+	BIT	6,A
+	JR	Z,CNMDOK	;MODE=ASCII
+	;switch to ASCII
+	LD	HL,CMASCI
+	LD	DE,CNASCR
+	JP	REQ_CMD		;without ARG
+CNASCR:	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	ASC_UP
+	JP	C,CNLSTR	;ERR
+CNMDOK:	BIT	4,(IY)
+	JR	NZ,CNLPSV
+	;Active mode -> 'PORT'
+	CALL	PORTUP		;prepare
+	JP	C,CNLSTR	;ERR
+	LD	HL,(F_CBUF)	;prepared cmd
+	LD	DE,CNPRTR
+	JP	REQ_CMD		;without ARG
+CNPRTR:	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	LD	HL,200		;"OK"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	JR	NZ,CNLSTR	;ERR
+	JR	CNOPDC
+CNLPSV:	;Passive mode -> 'PASV'
+	LD	HL,CMPASV
+	LD	DE,CNPASR
+	JP	REQ_CMD		;without ARG
+CNPASR:	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	PASVUP
+	JR	C,CNLSTR	;ERR
+CNOPDC:	;open Data-Connection
+	CALL	DSCKOP
+	JR	C,CNLSTE	;ERR
+	;NLST/LIST/TYPE(RETR FN.FT)
+	LD	HL,(LSTCMD)
+	LD	DE,NLST_RPL
+	JP	REQ_OPT		;optional ARG
+NLST_RPL:	;REPLY NLST/LIST/TYPE(RETR FN.FT)
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	BIT	5,(IY+3)	;M-command ON?
+	CALL	NZ,CDAOUQ	;quit only
+	CALL	Z,CDVOUT	;info out
+	LD	HL,(RPLYCD)
+	LD	DE,200
+	OR	A
+	SBC	HL,DE		;1xx Code?
+	JR	NC,CNLSTE	;no->close Dsocket
+	;activate Data-Transfer and Ret-Address
+	SET	3,(IY+1)	;disable Prompt!
+	LD	HL,RCVDIR	;receive DIR
+	LD	DE,NLDATA_RPL	;Transfer return
+	JP	TROPEN		;Transfer ON
+NLDATA_RPL:	;REPLY 'LIST/NLST/TYPE DATA'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	BIT	5,(IY+3)	;M-command ON?
+	CALL	NZ,CDAOUQ	;quit only
+	CALL	Z,CDVOUT	;info out
+CNLSTE:	CALL	DCLOSE		;close Dsocket
+CNLSTR:	CALL	MSGOUT		;process pending Err-MSG
+	LD	A,(CFSTAT)
+	BIT	6,A
+	JP	NZ,CMD_BINARY	;restore TYPE I
+	JP	MCMRET		;test M-command
+CMNLST:	DB	'NLST',0
+;-------------------------------
+CMD_OPEN:	;'OPEN '
+	BIT	7,(IX+F_SOST)	;Csocket online?
+	LD	DE,F_CMXR
+	JP	NZ,ACTOUT	;yes->'already connected'
+	LD	HL,(F_LBUF)	;dummy store ARG
+	LD	DE,OPEN_ARG
+	LD	BC,CANMIP
+	JP	REQ_AIN		;get ARG
+OPEN_ARG:
+	LD	A,(IX)
+	CALL	CLOSE		;release Csocket for resolver
+	LD	HL,01500H
+	LD	(F_PORT),HL	;reset standard FTP-Port NOrder
+	LD	HL,(F_LBUF)	;ARG
+	INC	HL		;skip SPACE
+	CALL	MKHOST		;NAME|IP[:PORT]
+	PUSH	AF
+	CALL	SCKRIN		;re-allocate
+	POP	AF
+	RET	C		;DNS-ERR with pending message
+	PUSH	IX
+	POP	HL
+	LD	DE,F_NAME
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,(F_LBUF)	;ARG
+	INC	HL		;skip SPACE
+	CALL	COPYNM		;->save NAME to Csocket
+	PUSH	IX
+	POP	HL
+	LD	DE,F_SVIP
+	ADD	HL,DE
+	PUSH	HL		;save for CONNECT
+	EX	DE,HL
+	LD	HL,F_PEER
+	LD	BC,6		;IP+Port
+	LDIR			;->save to Csocket
+	LD	DE,F_CMXF	;'Connecting to '
+	CALL	ZKOUT
+	LD	DE,(F_LBUF)	;server
+	INC	DE		;skip SPACE
+	CALL	ZKOUT
+	CALL	NEWLN
+	POP	HL
+	LD	A,(IX)
+	CALL	CONNECT
+	LD	DE,F_CMXI
+	CALL	C,ACTOUT	;'timeout'
+	JP	C,SCLOSE	;ERR->close Csocket (offline)
+	;connected
+	SET	7,(IX+F_SOST)	;set Csocket online
+	LD	DE,(F_LBUF)
+	PUSH	DE
+	CALL	WCNMSG
+	POP	DE
+	CALL	ZKOUT
+RECONN:	LD	HL,CONNECT_RPL
+	LD	A,80H+8		;Prompt OFF
+	CALL	RDREXE		;RPL ON
+	CALL	SNDACT		;like Send message
+	RET
+CONNECT_RPL:	;REPLY 'CONNECT'
+	CALL	WTROFF		;RPL OFF and Prompt ON!
+	RET	Z		;-> wait for data
+	CALL	CDAOUT		;always out
+	LD	HL,120		;"Preliminary ready"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	JR	Z,RECONN	;wait for second reply
+	LD	HL,220		;"ready"
+	OR	A
+	SBC	HL,DE
+	JP	NZ,CONERR	;ERR->'CLOSE'
+	JP	CMD_USER	;OK ->'USER'
+;-------------------------------
+CMD_OPTIONS:	;'OPTIONS '
+	LD	HL,CMOPTS
+	LD	DE,RPL_ALLOUT
+	LD	BC,CACDOP
+	JP	REQ_ARG		;required ARG
+CMOPTS:	DB	'OPTS',0
+;-------------------------------
+CMD_PASSIVE:	;'PASSIVE'
+	LD	HL,S_PASS
+	CALL	COPMSG
+	LD	B,(IY)
+	LD	C,10H		;Bit 4
+	CALL	TSWARG
+	RET	C		;ERR
+	LD	(IY),A
+	AND	C
+	JP	SONOFF
+;-------------------------------
+CMD_PD:		;'PD'
+	LD	HL,CMCDUP
+	LD	DE,RPL_ALLOUT
+	JP	REQ_CMD		;without ARG
+CMCDUP:	DB	'CDUP',0
+;-------------------------------
+CMD_PROMPT:	;'PROMPT'
+	LD	HL,S_INTE
+	CALL	COPMSG
+	LD	B,(IY)
+	LD	C,8		;Bit 3
+	CALL	TSWARG
+	RET	C		;ERR
+	LD	(IY),A
+	AND	C
+	JP	SONOFF
+;-------------------------------
+CMD_PUT:	;'PUT '
+	LD	HL,CMRNTO
+	LD	DE,(F_RBUF)	;copy RNTO( +ARG) to F_RBUF!
+	CALL	COPCMD
+	EX	DE,HL		;HL: dest. ARG address
+	LD	DE,STOR_ARG
+	LD	BC,CALFIL
+	JP	REQ_AIN		;get ARG
+STOR_ARG:
+	CALL	TCLFNM		;test and load PGSSTR
+	RET	C		;ERR length, illegal char's
+	LD	DE,XE_AMFN
+	JP	NZ,ACTOUT	;ambiguous filename
+MPUTIN:	;
+	;   ### Entry MPUT ###
+	;   PGSSTR = local filename
+	;   F_RBUF = 'RNTO'-command Zstring
+	;
+	LD	HL,(F_RBUF)
+	LD	DE,5
+	ADD	HL,DE
+	LD	(TARG1),HL	;load (ARG-)PTR to filename
+	CALL	DSFCBI		;init Dsocket-FCB
+	LD	(DSCKNM),DE	;for close Out
+	LD	D,B
+	LD	E,C		;load FIOCTL
+	CALL	DTRSTR		;load DSocket/reset Transfer-State
+	CALL	_OPENT		;Public off
+	CALL	_FYI$OPEN	;open file ...
+	CALL	_OPENR		;Public old
+	LD	DE,XE_LFNF
+	CALL	Z,ACTOUT	;... ERR: activate message
+	JP	Z,CMSTOE	;... ERR: file not found
+	SET	2,(IX+F_SOST)	;Local file open
+	;get reply: NLST filename
+	LD	DE,CMPLRT	;new Ret-PTR
+	CALL	SVMCMD		;save running M-command
+	SET	5,(IY+3)	;M-command ON
+	CALL	MDINIT		;init NLST-Save
+	CALL	GETMTOP##
+	LD	(TEMP+2),HL	;DIR-PTR max.
+	SET	2,(IY+1)	;ARG ON for NLIST
+	JP	CMD_NLIST	;use NLIST ARG-PTR (filename)
+CMPLRT:	CALL	RSMCMD		;restore old M-command and IX
+	RES	1,(IX+F_SOST)	;reset ERR (TPA-Overflow)
+	RES	7,(IY)		;and message
+	LD	BC,(TEMP+4)	;entry counter
+	LD	A,B
+	OR	C
+	JR	Z,CMPTCP	;Ok: file does not exist
+	SET	3,(IX+F_SOST)	;Put file exists
+	BIT	0,(IY)		;Runique ON?
+	LD	DE,XE_RFNU
+	CALL	NZ,ACTOUT	;activate message
+	JP	NZ,CMSTRS	;yes->Skip file
+	BIT	3,(IY)		;prompting ON?
+	JR	Z,CMPTCP	;no->put
+	;ask for delete
+	LD	HL,CMSTDI
+	LD	DE,XE_RFEX
+	LD	A,40H+10H	;One Char input ON
+	CALL	RDREXE		;CON wait ON
+	RET
+CMSTDI:	PUSH	AF		;Key-Code
+	LD	A,40H+10H	;One Char input OFF
+	CALL	RDRTGL		;CON wait OFF
+	POP	AF
+	AND	5FH		;UCASE
+	CP	'Y'
+	JP	NZ,CMSTRS	;<>'Y'->Skip file
+CMPTCP:	LD	IX,(FDSBUF)	;Dsocket
+	SET	4,(IX+F_SOST)	;Put file stamp
+	BIT	4,(IY)
+	JR	NZ,CMPPSV
+	;Active mode -> 'PORT'
+	CALL	PORTUP		;prepare 'PORT'
+	JP	C,CMSTOE	;ERR
+	LD	HL,(F_CBUF)	;prepared cmd
+	LD	DE,CPPRTR
+	JP	REQ_CMD		;without ARG
+CPPRTR:	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	LD	HL,200		;"OK"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	JP	NZ,CMSTOE	;ERR
+	JR	CPOPDC
+CMPPSV:	;Passive mode -> 'PASV'
+	LD	HL,CMPASV
+	LD	DE,CPPASR
+	JP	REQ_CMD		;without ARG
+CPPASR:	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	PASVUP
+	JP	C,CMSTOE	;ERR
+CPOPDC:	;open Data-Connection
+	CALL	DSCKOP
+	JP	C,CMSTOE	;ERR
+	;STOR FTP$FILE.$$$
+	LD	HL,CMSTOR	;store ftp file
+	CALL	MFPCMD		;make cmd
+	LD	DE,STOR_RPL
+	JP	REQ_CMD		;without ARG
+STOR_RPL:	;REPLY 'STOR'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	LD	HL,(RPLYCD)
+	LD	DE,200
+	OR	A
+	SBC	HL,DE		;1xx Code?
+	JP	NC,CMSTOE	;no->ERR
+	;activate Data-Transfer and Ret-Address
+	SET	0,(IY+1)	;rebuild cmdline
+	LD	HL,RDDATA	;read Data from opened file
+	LD	DE,STDATA_RPL	;Transfer return
+	JP	TROPEN		;Transfer ON
+STDATA_RPL:	;REPLY 'STOR DATA'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUT		;always out
+	;test OK replies
+	LD	DE,(RPLYCD)
+	LD	HL,226		;"closing data connection, file action successful"
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMSTOK	;OK
+	LD	HL,250		;"file action okay, completed"
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMSTOK	;OK
+	;activate ERR replies
+	LD	IX,(FDSBUF)	;restore Dsocket
+	SET	1,(IX+F_SOST)	;set ERR: break M-command
+CMSTOK:	BIT	2,(IY+2)	;abort sent?
+	JR	Z,CMSTRC	;no->continue
+	LD	HL,ABOST_RPL
+	LD	(RPLSUB),HL
+	JP	REQRIN		;get reply
+ABOST_RPL:	;REPLY 'ABOR'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUT		;always out
+CMSTRC:	LD	HL,(F_RBUF)
+	LD	DE,5
+	ADD	HL,DE
+	LD	(TARG1),HL	;reload PTR to filename
+	LD	IX,(FDSBUF)	;Dsocket
+	BIT	1,(IX+F_SOST)
+	JR	NZ,CMSTRD	;ERR
+	BIT	3,(IX+F_SOST)	;Put file exists?
+	JR	Z,CMSTRN	;no->skip del.
+	LD	HL,CMDELE	;DELEte Put file
+	LD	DE,(F_CBUF)	;build cmd in F_CBUF
+	PUSH	DE
+	CALL	COPCMD
+	LD	A,' '
+	LD	(DE),A
+	INC	DE
+	LD	HL,(TARG1)	;PTR to filename
+	CALL	COPCMD		;path
+	POP	HL
+	LD	DE,PDEL_RPL
+	JP	REQ_CMD		;without ARG
+PDEL_RPL:	;REPLY 'DELE'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	LD	HL,(RPLYCD)
+	LD	DE,300
+	OR	A
+	SBC	HL,DE		;2xx Code?
+	JR	NC,CMSTRD	;no
+CMSTRN:	LD	HL,CMRNFR	;OK: RNFR FTP$FILE.$$$
+	CALL	MFPCMD
+	LD	DE,SRFR_RPL
+	JP	REQ_CMD		;without ARG
+SRFR_RPL:	;REPLY 'SRFR'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	LD	HL,(RPLYCD)
+	LD	DE,350		;"pending further info"
+	OR	A
+	SBC	HL,DE
+	JR	NZ,CMSTRD	;ERR
+	LD	HL,(F_RBUF)	;RNTO Put file (read back from F_RBUF)
+	LD	DE,SRTO_RPL
+	JP	REQ_CMD		;without ARG
+SRTO_RPL:	;REPLY 'SRTO'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	LD	HL,(RPLYCD)
+	LD	DE,250		;"file action okay, completed"
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMSTOC	;continue
+CMSTRD:	LD	HL,CMDELE	;DELE FTP$FILE.$$$
+	CALL	MFPCMD
+	LD	DE,SDEL_RPL
+	JP	REQ_CMD		;without ARG
+SDEL_RPL:	;REPLY 'SDEL'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+CMSTOE:	LD	IX,(FDSBUF)	;restore Dsocket
+	SET	1,(IX+F_SOST)	;set ERR: break M-command
+CMSTOC:	CALL	DCLOSE		;close Dsocket, PA: Dsocket in IX!
+CMSTRS:	CALL	MSGOUT		;process pending Err-MSG
+	LD	IX,(FDSBUF)	;Dsocket
+	PUSH	IX
+	POP	HL
+	LD	DE,FIOCTL
+	ADD	HL,DE
+	EX	DE,HL		;FIOCTL
+	BIT	2,(IX+F_SOST)	;file open?
+	CALL	NZ,_FYI$CLOSE	;yes->close input file
+	BIT	1,(IX+F_SOST)
+	JP	NZ,CMSTRJ	;ERR
+	BIT	4,(IX+F_SOST)
+	JP	Z,CMSTRJ	;Put file stamp OFF
+	BIT	0,(IY+3)	;Send D/T?
+	JP	Z,CMSTRJ	;->OFF
+	CALL	DSMCLR		;clear DS buffer
+	LD	HL,10
+	ADD	HL,DE
+	EX	DE,HL		;DE=Put file FCB
+	CALL	_INITFCB	;reset
+	LD	HL,TEMP
+	CALL	RDSTAMP		;get DS
+	JP	Z,CMSTRJ	;->ERR
+	CALL	DSTEST		;test DS data
+	JP	C,CMSTRJ	;->ERR
+CMD_MFMT:	;MFMT
+	LD	HL,CMMFMT	;cmd
+	LD	DE,(F_CBUF)	;build cmd in F_CBUF
+	PUSH	DE
+	CALL	COPCMD
+	LD	HL,TEMP+10	;BCD Modified
+	CALL	BCD2AS		;->write YYYYMMDDhhmmss + ' '
+	LD	HL,(TARG1)	;PTR to filename
+	CALL	COPCMD		;path
+	POP	HL
+	BIT	1,(IY+4)	;MFMT?
+	JR	Z,CMSTRM	;->OFF
+	LD	DE,MFMT_RPL
+	JP	REQ_CMD		;without ARG
+MFMT_RPL:	;REPLY 'MFMT'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+CMSTRM:	BIT	2,(IY+4)	;MFCT?
+	JR	Z,CMSTRT	;->OFF
+CMD_MFCT:	;MFCT
+	LD	HL,CMMFCT	;cmd
+	LD	DE,(F_CBUF)
+	PUSH	DE
+	CALL	COPCMD
+	LD	HL,TEMP		;BCD Create
+	CALL	BCD2AS		;->write YYYYMMDDhhmmss + ' '
+	POP	HL		;path from MFMT!
+	LD	DE,MFCT_RPL
+	JP	REQ_CMD		;without ARG
+MFCT_RPL:	;REPLY 'MFCT'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+CMSTRT:	BIT	3,(IY+4)	;SITE UTIME?
+	JR	Z,CMSTRI	;->OFF
+CMD_SUTM:	;SITE UTIME
+	LD	HL,CMSUTM	;cmd
+	LD	DE,(F_CBUF)
+	PUSH	DE
+	CALL	COPCMD
+	LD	HL,(TARG1)	;PTR to filename
+	CALL	COPCMD		;path
+	LD	A,' '
+	LD	(DE),A
+	INC	DE
+	LD	HL,TEMP+10	;BCD Modified
+	PUSH	HL
+	PUSH	HL
+	CALL	BCD2AS		;->write YYYYMMDDhhmmss + ' '
+	POP	HL
+	CALL	BCD2AS		;->write YYYYMMDDhhmmss + ' '
+	POP	HL
+	CALL	BCD2AS		;->write YYYYMMDDhhmmss + ' '
+	LD	HL,CMSUTU
+	CALL	COPCMD		;'UTC'
+	POP	HL
+	LD	DE,SUT1_RPL
+	JP	REQ_CMD		;without ARG
+SUT1_RPL:	;REPLY 'SUT1'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	LD	HL,(RPLYCD)
+	LD	DE,300
+	OR	A
+	SBC	HL,DE		;2xx Code?
+	JR	C,CMSTRO	;Ok
+	CALL	CDAOUQ		;quit reply
+	LD	HL,(F_CBUF)
+	PUSH	HL
+	LD	DE,11
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,TEMP+10	;BCD Modified
+	CALL	BCD2AS		;->write YYYYMMDDhhmmss + ' '
+	LD	HL,(TARG1)	;PTR to filename
+	CALL	COPCMD		;path
+	POP	HL
+	LD	DE,SUT2_RPL
+	JP	REQ_CMD		;without ARG
+SUT2_RPL:	;REPLY 'SUT2'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+CMSTRO:	CALL	CDVOUT		;info out
+	LD	HL,(RPLYCD)
+	LD	DE,300
+	OR	A
+	SBC	HL,DE		;2xx Code?
+	JR	NC,CMSTRJ	;ERR
+CMSTRI:	CALL	DATEMS		;date message
+CMSTRJ:	JP	MCMRET		;test M-command
+CMSTOR:	DB	'STOR',0
+CMMFMT:	DB	'MFMT ',0	;MFMT YYYYMMDDhhmmss path
+CMMFCT:	DB	'MFCT ',0	;MFCT YYYYMMDDhhmmss path
+CMSUTM:	DB	'SITE UTIME ',0	;1: SITE UTIME path Modify Modify Modify UTC
+CMSUTU:	DB	'UTC',0		;2: SITE UTIME Modify path
+;-------------------------------
+CMD_PWD:	;'PWD'
+	LD	HL,CMPWD
+	LD	DE,RPL_ALLOUT
+	JP	REQ_CMD		;without ARG
+;-------------------------------
+CMD_QUIT:	;'QUIT'
+	BIT	7,(IX+F_SOST)	;online?
+	JR	Z,CMQSET	;no
+	SET	3,(IY+2)	;set close active
+	LD	HL,CMQUIT
+	LD	DE,QUIT_RPL
+	JP	REQ_CMD		;without ARG
+QUIT_RPL:
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUT		;always out
+CMQSET:	SET	1,(IY+2)	;request User-PI Quit
+	RET
+;-------------------------------
+CMD_QUOTE:	;'QUOTE '
+	LD	HL,(F_RBUF)	;dummy store ARG
+	LD	DE,QUOTE_ARG
+	LD	BC,CACMD
+	JP	REQ_AIN		;get ARG
+QUOTE_ARG:
+	LD	HL,(F_RBUF)	;ARG
+	INC	HL		;skip SPACE
+	LD	DE,(F_CBUF)
+	PUSH	DE
+	CALL	COPCMD		;copy "quoted" CMD
+	POP	HL
+	LD	DE,RPL_ALLOUT
+	JP	REQ_CMD		;without ARG
+;-------------------------------
+CMD_REN:	;'RENAME '
+	LD	HL,CMRNFR
+	LD	DE,(F_CBUF)	;write to F_CBUF
+	CALL	COPCMD
+	EX	DE,HL		;HL: dest. ARG address
+	LD	DE,RNFR_ARG
+	LD	BC,CAFRPN
+	JP	REQ_AIN		;get ARG 1
+RNFR_ARG:
+	LD	HL,CMRNTO
+	LD	DE,(F_RBUF)	;write to F_RBUF
+	CALL	COPCMD
+	EX	DE,HL		;HL: dest. ARG address
+	LD	DE,RNTO_ARG
+	LD	BC,CATOPN
+	JP	REQ_AIN		;get ARG 2
+RNTO_ARG:
+	LD	HL,(F_CBUF)	;RNFR from F_CBUF
+	LD	DE,RNFR_RPL
+	JP	REQ_CMD		;without ARG
+RNFR_RPL:	;REPLY 'RNFR'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUT		;always out
+	LD	HL,350		;"pending further info"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	RET	NZ		;break RENAME CMD
+	;OK ->'RNTO'
+	LD	HL,(F_RBUF)	;read back from F_RBUF
+	LD	DE,RPL_ALLOUT
+	JP	REQ_CMD		;without ARG
+CMRNFR:	DB	'RNFR',0
+CMRNTO:	DB	'RNTO',0
+;-------------------------------
+CMD_RHELP:	;'RHELP '
+	LD	HL,CMHELP
+	LD	DE,RPL_ALLOUT
+	JP	REQ_OPT		;optional ARG
+CMHELP:	DB	'HELP',0
+;-------------------------------
+CMD_RMDIR:	;'RMDIR '
+	LD	HL,CMRMD
+	LD	DE,RPL_ALLOUT
+	LD	BC,CAPATH
+	JP	REQ_ARG		;required ARG
+CMRMD:	DB	'RMD',0
+;-------------------------------
+CMD_RSTAT:	;'RSTAT '
+	LD	HL,CMSTAT
+	LD	DE,RPL_ALLOUT
+	JP	REQ_OPT		;optional ARG
+CMSTAT:	DB	'STAT',0
+;-------------------------------
+CMD_RUNIQUE:	;'RUNIQUE'
+	LD	HL,S_RUNI
+	CALL	COPMSG
+	LD	B,(IY)
+	LD	C,1		;Bit 0
+	CALL	TSWARG
+	RET	C		;ERR
+	LD	(IY),A
+	AND	C
+	JP	SONOFF
+;-------------------------------
+CMD_SCRIPT:	;'SCRIPT'
+	LD	HL,(F_LBUF)	;write to F_LBUF !
+	LD	DE,SCRIPT_ARG
+	LD	BC,CALFIL
+	JP	REQ_AIN		;get ARG
+SCRIPT_ARG:
+	CALL	TNARGI
+	RET	C		;no ARG
+	CALL	SCRFNT		;test FN.FT (no ERR->scripting ON)
+	JP	C,ACTOUT	;ERR
+	JP	SCROSF		;open script file (ERR->scripting OFF)
+;-------------------------------
+CMD_SITE:	;'SITE '
+	LD	HL,CMSITE
+	LD	DE,RPL_ALLOUT
+	LD	BC,CAPARA
+	JP	REQ_ARG		;required ARG
+CMSITE: DB	'SITE',0
+;-------------------------------
+CMD_SIZE:	;'SIZE '
+	LD	HL,CMSIZE
+	LD	DE,SIZE_RPL
+	LD	BC,CAPANM
+	JP	REQ_ARG		;required ARG
+SIZE_RPL:	;REPLY 'SIZE'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	LD	HL,(RPLYCD)	;"Size Ok"
+	LD	DE,213
+	OR	A
+	SBC	HL,DE
+	JR	NZ,CSIZEE	;Err
+	;make 'SIZE' message
+	LD	HL,(F_MBUF)
+	LD	DE,4
+	ADD	HL,DE		;size
+	LD	DE,(F_LBUF)
+	CALL	ACTOUT		;activate
+	JR	CSIZEC
+CSIZEW:	LDI			;copy digits
+CSIZEC:	LD	A,(HL)
+	CALL	ISDIGIT##
+	JR	Z,CSIZEW
+	BIT	6,(IY)
+	LD	HL,CMSBIN
+	CALL	NZ,COPCMD	;copy IMAGE text
+	LD	HL,CMSASC
+	CALL	Z,COPCMD	;copy ASCII text
+	CALL	CDAOUQ		;quit reply!
+	RET
+CSIZEE:	CALL	CDAOUT		;always out
+	RET
+CMSIZE: DB	'SIZE',0
+CMSASC:	DB	' Byte (Transfer Type = ASCII).',0
+CMSBIN:	DB	' Byte (Transfer Type = IMAGE).',0
+;-------------------------------
+CMD_STATUS:	;'STATUS'
+	LD	DE,(F_LBUF)	;MSG buffer
+	CALL	ACTOUT		;activate
+	CALL	WCNMSG		;write connection MSG
+	CALL	WLHMDU		;write HOME DU:
+	BIT	3,(IY+3)
+	LD	HL,S_EOFM
+	CALL	ZSTXTO
+	BIT	3,(IY)
+	LD	HL,S_INTE
+	CALL	ZSTXTO
+	BIT	1,(IY)
+	LD	HL,S_LUNI
+	CALL	ZSTXTO
+	BIT	0,(IY)
+	LD	HL,S_RUNI
+	CALL	ZSTXTO
+	BIT	1,(IY+3)
+	LD	HL,S_RCDT
+	CALL	ZSTXTO
+	BIT	0,(IY+3)
+	LD	HL,S_SDDT
+	CALL	ZSTXTO
+	BIT	2,(IY)
+	LD	HL,S_VERB
+	CALL	ZSTXTO
+	BIT	5,(IY)
+	LD	HL,S_DEBU
+	CALL	ZSTXTO
+	BIT	2,(IY+3)
+	LD	HL,S_SYSF
+	CALL	ZSTXTO
+	LD	A,(IY)
+	BIT	6,A
+	LD	HL,S_BINA
+	CALL	NZ,ZSTXTO
+	CPL
+	BIT	6,A
+	LD	HL,S_ASCI
+	CALL	NZ,ZSTXTO
+	BIT	4,(IY)
+	LD	HL,S_PASS
+	CALL	ZSTXTO
+	OR	A		;reset CY
+	BIT	7,(IY+4)
+	LD	HL,S_LOGF
+	JR	Z,ZSTEXT	;OFF wo NL
+	CALL	ZSTEXT		;write ON state
+	DEC	DE
+	DEC	DE		;overwrite "ON"
+	JP	WLGFNM		;write Log file name
+ZSTXTO:	;status text MEM out
+	SCF			;with NL
+ZSTEXT:	PUSH	AF
+	LD	B,24		;max. string-length
+ZSTXTT:	LD	A,(HL)
+	INC	HL
+	AND	A
+	JR	NZ,ZSTXTP
+	DEC	HL
+	LD	A,' '
+ZSTXTP:	LD	(DE),A
+	INC	DE
+	DJNZ	ZSTXTT
+	POP	AF
+SONOFF:	LD	HL,S_ON
+	CALL	NZ,COPCMD
+	LD	HL,S_OFF
+	CALL	Z,COPCMD
+	CALL	C,MNEWLN
+	RET
+;-------------------------------
+CMD_SYSTEM:	;'SYSTEM'
+	LD	HL,CMSYST
+	LD	DE,RPL_ALLOUT
+	JP	REQ_CMD		;without ARG
+CMSYST:	DB	'SYST',0
+;-------------------------------
+CMD_TYPE:	;'TYPE'
+	LD	HL,CMRETR	;write CMD(+ARG) to F_RBUF!
+	LD	DE,(F_RBUF)
+	CALL	COPCMD
+	EX	DE,HL		;HL: dest. ARG address
+	LD	DE,TYPE_ARG
+	LD	BC,CAPANM
+	JP	REQ_AIN		;(+ARG) or new ARG to F_RBUF!
+TYPE_ARG:
+	CALL	TNARGI
+	RET	C		;no ARG
+	LD	HL,(F_RBUF)
+	LD	(LSTCMD),HL	;load CMD-PTR
+	JP	CLISTI		;->use NLIST
+;-------------------------------
+CMD_USER:	;'USER'
+	BIT	6,(IY+4)	;script active?
+	JR	Z,CMD_U1	;no
+	CALL	SCRLPR		;pre-read line
+	LD	DE,LCUSER
+	CALL	CMP5BT
+	JR	NZ,CMD_U1	;no USER line
+	CALL	ARGTST		;process ARG
+	RES	5,(IY+4)	;quit
+	JR	CMD_U2		;USER line from script
+CMD_U1:	LD	HL,CMUSER
+CMD_U2:	LD	DE,USER_RPL
+	LD	BC,CAUSER
+	JP	REQ_ARG		;required ARG
+USER_RPL:	;REPLY 'USER'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUT		;always out
+	LD	HL,331		;"Ok, need password"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMD_PASS	;OK ->'PASS'
+	JR	CMD_P3
+CMUSER:	DB	'USER',0
+	;-----------------------
+CMD_PASS:	;'PASS '
+	BIT	6,(IY+4)	;script active?
+	JR	Z,CMD_P1	;no
+	BIT	5,(IY+4)	;next line has been read?
+	JR	NZ,CMD_P1	;yes->skip
+	CALL	SCRLPR		;pre-read line
+	LD	DE,LCPASS
+	CALL	CMP5BT
+	JR	NZ,CMD_P1	;no PASS line
+	CALL	ARGTST		;process ARG
+	RES	5,(IY+4)	;quit
+	JR	CMD_P2		;PASS line from script
+CMD_P1:	LD	HL,CMPASS
+CMD_P2:	LD	DE,PASS_RPL
+	LD	BC,CAPASS
+	SET	5,(IY+1)	;blur ON
+	JP	REQ_ARG		;required ARG
+PASS_RPL:	;REPLY 'PASS'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	RES	5,(IY+1)	;blur OFF
+	CALL	CDAOUT		;always out
+	LD	HL,202		;"command not implemented"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMD_LOGIN	;OK ->'LOGIN'
+CMD_P3:	LD	HL,332		;"Need account for login"
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMD_ACCOUNT	;OK ->'ACCOUNT'
+CMD_P4:	LD	HL,230		;"User logged in, proceed"
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMD_LOGIN	;OK ->'LOGIN'
+	RET			;ERR
+CMPASS:	DB	'PASS',0
+	;-----------------------
+CMD_ACCOUNT:	;'ACCOUNT '
+	BIT	6,(IY+4)	;script active?
+	JR	Z,CMD_A1	;no
+	BIT	5,(IY+4)	;next line has been read?
+	JR	NZ,CMD_A1	;yes->skip
+	CALL	SCRLPR		;pre-read line
+	LD	DE,LCACCT
+	CALL	CMP5BT
+	JR	NZ,CMD_A1	;no ACCT line
+	CALL	ARGTST		;process ARG
+	RES	5,(IY+4)	;quit
+	JR	CMD_A2		;ACCT line from script
+CMD_A1:	LD	HL,CMACCT
+CMD_A2:	LD	DE,ACCT_RPL
+	LD	BC,CAACCT
+	SET	5,(IY+1)	;blur ON
+	JP	REQ_ARG		;required ARG
+ACCT_RPL:	;REPLY 'ACCT'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	RES	5,(IY+1)	;blur OFF
+	CALL	CDAOUT		;always out
+	LD	HL,202		;"command not implemented"
+	LD	DE,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	JR	Z,CMD_LOGIN	;OK ->'LOGIN'
+	JR	CMD_P4
+CMACCT:	DB	'ACCT',0
+	;-----------------------
+CMD_LOGIN:	;'LOGIN'
+	LD	A,(IY+4)
+	AND	11110000B	;reset D/T features
+	LD	(IY+4),A
+	;print 'SYST'
+	LD	HL,CMSYST
+	LD	DE,SYST_RPL
+	JP	REQ_CMD		;without ARG
+SYST_RPL:	;REPLY 'SYST'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUT		;always out
+	;set 'STRU'
+	LD	HL,CMSTRU
+	LD	DE,STRU_RPL
+	JP	REQ_CMD		;without ARG
+STRU_RPL:	;REPLY 'STRU'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	;set 'MODE'
+	LD	HL,CMMODE
+	LD	DE,MODE_RPL
+	JP	REQ_CMD		;without ARG
+MODE_RPL:	;REPLY 'MODE'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDVOUT		;info out
+	;notify 'CLNT'
+	LD	HL,CMCLNT
+	LD	DE,CLNT_RPL
+	JP	REQ_CMD		;without ARG
+CLNT_RPL:	;REPLY 'CLNT'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUQ		;quit reply only wo output
+	;get 'FEAT'
+	LD	HL,CMFEAT
+	LD	DE,FEAT_RPL
+	JP	REQ_CMD		;without ARG
+FEAT_RPL:	;REPLY 'FEAT'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	SCANFT		;scan features
+	CALL	CDVOUT		;info out
+	BIT	1,(IY+4)	;'MFMT' support?
+	JR	NZ,SKSUTM	;yes->skip 'SITE UTIME'
+	;test 'SITE UTIME'
+	LD	HL,CMSUTM
+	LD	DE,SUTM_RPL
+	JP	REQ_CMD		;without ARG
+SUTM_RPL:	;REPLY 'SITE UTIME'
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	CALL	CDAOUQ		;quit reply only wo output
+	LD	DE,501		;"Syntax error"
+	LD	HL,(RPLYCD)
+	OR	A
+	SBC	HL,DE
+	JR	NZ,SKSUTM
+	SET	3,(IY+4)	;=ON
+SKSUTM:	;set Date/Time support
+	RES	1,(IY+3)	;Recv OFF
+	RES	0,(IY+3)	;Send OFF
+	LD	A,(IY+4)
+	BIT	4,A
+	JR	Z,NODTTM	;no local support
+	BIT	0,A
+	JR	Z,NRDTTM	;no MDTM support
+	SET	1,(IY+3)	;Recv D/T ON
+NRDTTM:	AND	00001010B
+	JR	Z,NODTTM	;no MFMT/SITE UTIME support
+	SET	0,(IY+3)	;Send D/T ON
+NODTTM:	;sync. 'TYPE' (F_STAT: Bit 6)
+	BIT	6,(IY)
+	JP	NZ,CMD_BINARY
+	JP	CMD_ASCII
+CMSTRU:	DB	'STRU F',0
+CMMODE:	DB	'MODE S',0
+CMCLNT:	DB	'CLNT CP/M 2+ (KCNet)',0
+;-------------------------------
+CMD_VERBOSE:	;'VERBOSE'
+	LD	HL,S_VERB
+	CALL	COPMSG
+	LD	B,(IY)
+	LD	C,4		;Bit 2
+	CALL	TSWARG
+	RET	C		;ERR
+	LD	(IY),A
+	AND	C
+	JP	SONOFF
+;-------------------------------
+CMD_CMDS:	;'?'
+	LD	DE,F_CMXQ
+	CALL	ZKOUT
+	LD	DE,CMNULL	;find all commands!
+CCMDUP:	;entry from TAB-key
+	LD	HL,CMDTAB
+	LD	BC,CMDTLG
+CCMDSN:	LD	A,'@'
+	CALL	ZSTRFD		;search command
+	CALL	C,NEWLN
+	RET	C		;search range scanned
+	PUSH	DE
+	LD	DE,(TARG7)
+	CALL	ZSCMDO		;command string
+	POP	DE
+	JR	CCMDSN		;next command
+;-------------------------------
+	;
+;### REQ->REPLY SUB-programs ###########################
+	;
+;-------------------------------
+REQ_CMD:	;REQUEST REMOTE COMMAND
+	XOR	A		;without ARG
+	JR	REQCMD
+REQ_OPT:	;REQUEST REMOTE COMMAND
+	LD	A,1		;optional ARG
+	JR	REQCMD
+REQ_ARG:	;REQUEST REMOTE COMMAND
+	LD	A,2		;required ARG 
+	JR	REQCMD
+REQ_AIN:	;REQUEST ARG (local CMD)
+	LD	A,3		;required ARG
+	;
+REQCMD:	;PE:  HL-address CMD Zstring or
+	;	   dest. address ARG, if A=3
+	;     DE-address REPLY SUB-program or
+	;	       chain-address, if A=3
+	;     BC-address ARG Zstring, if A=2|3
+	LD	(RPLCCD),A
+	LD	(RPLSUB),DE
+	CP	3
+	JR	NZ,REQCMA
+	EX	DE,HL
+	JR	REQCMI
+REQCMA:	LD	DE,(F_CBUF)
+	CALL	COPCMD		;copy CMD Zstring
+REQCMI:	OR	A
+	JR	Z,REQNOA	;without ARG
+	BIT	2,(IY+1)
+	JR	NZ,CGARGL	;ARG found -> load
+	DEC	A
+	JR	Z,REQNOA	;optional ARG
+	LD	(RCGARG),DE	;save dest. address ARG
+	LD	HL,GARG_RPL
+	LD	D,B
+	LD	E,C		;input prompt
+	LD	A,40H
+	CALL	RDREXE		;GARG ON
+	RET
+GARG_RPL:
+	CALL	RDROFF		;GARG OFF
+	LD	HL,(F_IBUF)
+	LD	(TARG1),HL	;load source address
+	LD	DE,(RCGARG)	;dest. address ARG (-1)
+CGARGL:	RES	2,(IY+1)	;quit ARG
+	LD	A,' '
+	LD	(DE),A		;1 SPC between CMD and ARG
+	INC	DE
+	LD	HL,(TARG1)	;ARG address
+	CALL	COPCMD		;-> copy to ARG buffer
+	LD	A,(RPLCCD)
+	CP	3
+	JR	NZ,REQNOA
+	LD	HL,(RPLSUB)	;chain-address
+	JP	(HL)
+REQNOA:	SET	0,(IY+2)	;Send message ON
+REQRIN:	;Re-Entry get reply
+	LD	HL,(RPLSUB)
+	LD	A,80H+8		;Prompt OFF
+	CALL	RDREXE		;RPL ON
+	RET
+	;
+CAUSER:	DB	'User : ',0
+CAPASS:	DB	'Pass : ',0
+CAACCT:	DB	'Account : ',0
+CAPATH:	DB	'Path : ',0
+CAPANM:	DB	'[Path]Name : ',0
+CACMD:	DB	'Command : ',0
+CAPARA:	DB	'Parameters : ',0
+CANMIP:	DB	'Name or IP : ',0
+CACDOP:	DB	'Command [command-options] :',0
+CAFRPN:	DB	'From [Path]Name : ',0
+CATOPN:	DB	'  To [Path]Name : ',0
+CALFIL:	DB	'Local filename : ',0
+CALMSK:	DB	'File(s) : ',0
+;-------------------------------
+RPL_VEROUT:	;STANDARD REPLY VERBOSE
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	JP	CDVOUT		;info out
+;-------------------------------
+RPL_ALLOUT:	;STANDARD REPLY ALWAYS ALL
+	CALL	WTROFF		;if data received RPL OFF
+	RET	Z		;-> wait for data
+	JP	CDAOUT		;always out
+;-------------------------------
+	;
+;### Data-Socket handler ###############################
+	;
+;-------------------------------
+RCVDIR:	;receive DIR data
+	LD	HL,(F_DBUF)
+	LD	BC,F_DSIZ	;Size max.!
+	LD	A,(IX)
+	PUSH	HL
+	CALL	RECV		;Recv TCP-Data (RecvSIZE BC)
+	POP	HL
+	RET	C		;CY=1: no (more) Data
+	BIT	5,(IX+F_SOST)	;Flush Data?
+	RET	NZ		;yes (CY=0!)
+	BIT	5,(IY+3)	;M-command ON?
+	JP	Z,COCONL	;no
+MDIRCP:	;'MDIR'/'MGET' -> F_VBUF
+	LD	A,(HL)
+	EXX
+	LD	DE,(TEMP+8)	;LINE-PTR running
+	CP	LF
+	JR	Z,MDIRSV	;end of line -> entry
+	;recv line
+	LD	HL,(TEMP+10)	;LINE-PTR max.
+	OR	A
+	SBC	HL,DE
+	JR	NZ,MDIRCC
+	DEC	DE		;hold max.
+MDIRCC:	PUSH	DE
+	EXX
+	POP	DE
+	LDI
+	LD	(TEMP+8),DE
+	JP	PE,MDIRCP
+	OR	A		;CY=0!
+	RET
+MDIRSE:	EXX
+	INC	HL
+	DEC	BC
+	LD	A,B
+	OR	C		;CY=0!
+	JR	NZ,MDIRCP
+	RET
+MDIRSV:	;test and save entry
+	LD	HL,(TEMP+6)	;LINE-PTR
+	PUSH	HL
+	SBC	HL,DE
+	POP	HL
+	JR	Z,MDIRCC	;<>NL
+	DEC	DE
+	LD	A,(DE)
+	INC	DE
+	CP	CR
+	JR	NZ,MDIRCC	;<>NL
+	LD	(TEMP+8),HL	;reset LINE-PTR running
+	DEC	DE
+	XOR	A
+	LD	(DE),A		;terminate entry
+	PUSH	HL
+	SBC	HL,DE
+	POP	HL
+	JR	Z,MDIRCC	;only NL
+	LD	DE,(TEMP+12)
+	INC	DE
+	LD	(TEMP+12),DE	;all files counter+1
+	LD	DE,MDSSTR
+	CALL	GETSPC		;new entry -> 8.3+0 Zstring
+	JR	C,MDIRSE	;ERR-char in entry -> skip
+	XOR	A
+	CP	(HL)		;last CHR+1 <> 0
+	JR	NZ,MDIRSE	;too much CHR's or SPC in entry -> skip
+	OR	C
+	JR	NZ,MDIRSE	;'?/*' not allowed -> skip
+	LD	BC,(TEMP+4)	;cp/m files counter
+	LD	A,B
+	OR	C
+	LD	DE,(TEMP)	;DIR-PTR running
+	JR	Z,MDFRST	;first entry
+MDDBLT:	;test double entry
+	PUSH	BC
+	LD	HL,-16
+	ADD	HL,DE
+	PUSH	HL
+	INC	HL		;old entry (skip User!)
+	LD	DE,(TEMP+6)	;new entry
+	LD	B,12		;FN.FT
+MDDBLW:	LD	A,(HL)
+	AND	5FH
+	LD	C,A
+	LD	A,(DE)
+	AND	5FH
+	CP	C
+	JR	NZ,MDDBLN
+	INC	HL
+	INC	DE
+	DJNZ	MDDBLW
+MDDBLN:	POP	DE
+	POP	BC
+	JR	Z,MDIRSE	;double -> skip
+	DEC	BC		;counter
+	LD	A,B
+	OR	C
+	JR	NZ,MDDBLT	;next (old) entry
+	;test TPA-Overflow
+	LD	DE,(TEMP)	;DIR-PTR running
+	LD	H,D
+	LD	L,E
+	LD	BC,(TEMP+2)	;DIR-PTR max. from GETMTOP
+	SBC	HL,BC		;< max.?
+	JR	C,MDFRST
+	;set flush and ERR
+	LD	DE,F_CMXO
+	CALL	ACTOUT		;OUT message
+	SET	1,(IX+F_SOST)	;set ERR
+	SET	5,(IX+F_SOST)	;set Flush Data
+	OR	A
+	RET
+MDFRST:	;add entry (DE)
+	PUSH	DE
+	LD	A,(CUR_DU)
+	LD	(DE),A		;current User!
+	INC	DE
+	LD	HL,(TEMP+6)	;LINE-PTR
+	CALL	COPCMD		;copy original! Zstring
+	POP	DE
+	LD	HL,16
+	ADD	HL,DE
+	LD	(TEMP),HL	;next entry
+	LD	HL,(TEMP+4)
+	INC	HL
+	LD	(TEMP+4),HL	;cp/m files counter+1
+	JP	MDIRSE
+COCONL:	;'DIR'/'NLIST'/'TYPE' -> CON:
+	LD	A,(HL)
+	CP	LF
+	JR	NZ,COCONO
+	LD	A,CR
+	CP	E		;linefeed ... ?
+	LD	A,(HL)
+COCONO:	LD	E,A		;save last char
+	JR	Z,COCONC	;... yes
+	CP	TAB		; <===========================================================
+	CALL	NZ,ISPRINT##
+	PUSH	AF
+	CALL	Z,COUT##	;HT, 20-7EH out
+	POP	AF
+	PUSH	DE
+	LD	DE,LOGCTL
+	CALL	Z,WRLOGB	;and log
+	POP	DE
+	JR	COCONN		;next char
+COCONC:	CALL	LNEWLN
+	INC	(IX+F_SIZE)
+	LD	A,(IX+F_SIZE)
+	CP	23		;23 rows? <===========================================================
+	JR	NZ,COCONN
+	LD	(IX+F_SIZE),0	;reset counter
+	BIT	6,(IY+4)	;script active?
+	JR	NZ,COCONN	;yes
+	;wait for input
+	LD	(CONTMP),HL	;save address
+	LD	(CONTMP+2),DE	;save CR
+	LD	(CONTMP+4),BC	;save size
+	LD	HL,COCONI
+	LD	DE,F_CMXX
+	LD	A,40H+10H+8	;One Char input ON (prompt ON!)
+	CALL	RDREXE		;CON wait ON
+	RET
+COCONI:	PUSH	AF		;Key-Code
+	LD	A,40H+10H+8	;One Char input OFF (prompt OFF!)
+	CALL	RDRTGL		;CON wait OFF
+	LD	IX,(FDSBUF)	;Dsocket
+	LD	HL,(CONTMP)
+	LD	DE,(CONTMP+2)
+	LD	BC,(CONTMP+4)	;load
+	POP	AF
+	SET	5,(IX+F_SOST)	;Flush Data ON
+	CP	ETX
+	RET	Z		;CY=0!
+	CP	ESC
+	RET	Z		;CY=0!
+	RES	5,(IX+F_SOST)	;Flush Data OFF
+	CALL	LNVCLR
+COCONN:	;continue output
+	INC	HL
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,COCONL	;loop
+	RET			;CY=0!
+;-------------------------------
+WRDATA:	;'write received Data to opened file'
+	LD	HL,(F_DBUF)
+	LD	BC,F_FSIZ	;size of local data buffer!
+	LD	A,(IX)
+	CALL	RECV		;Recv TCP-Data (RecvSIZE BC)
+	RET	C		;CY=1: no (more) data
+	CALL	WRDBUF
+	PUSH	BC
+WRDATP:	;write data
+	LD	A,(HL)
+	CALL	_FY$PUT
+	JR	Z,WRDATD	;ERR
+	INC	HL
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,WRDATP
+	POP	BC
+	CALL	SVTRSZ		;save size +(BC)
+	CALL	SDTIME		;update Timer (CY=0)
+	RET
+WRDATD:	POP	BC
+	LD	DE,XE_DSKF
+	CALL	ACTOUT		;OUT message
+	JR	DHTERM		;terminate
+WRDBUF:	LD	HL,(FDSBUF)
+	LD	DE,FIOCTL
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,(F_DBUF)
+	RET
+DHTERM:	;terminate Data-Handler
+	SET	1,(IX+F_SOST)	;set ERR
+	CALL	SCLOSE		;close Dsocket
+	SCF			;like no Data
+	RET
+;-------------------------------
+RDDATA:	;'send read Data from opened file'
+	CALL	WRDBUF
+	LD	BC,F_FSIZ	;size of local data buffer!
+	PUSH	BC
+RDDATP:	;read data
+	CALL	_FY$GET
+	SCF			;EOF
+	JR	Z,RDDATC
+	LD	(HL),A
+	BIT	3,(IY+3)
+	JR	Z,RDDATB
+	;EOF-Stop ON
+	CP	EOFCD
+	SCF			;EOF
+	JR	Z,RDDATC
+RDDATB:	INC	HL
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,RDDATP
+RDDATC:	;send data
+	POP	HL
+	PUSH	AF		;save EOF
+	OR	A
+	SBC	HL,BC
+	LD	B,H
+	LD	C,L		;BC=bytes read
+	JR	Z,RDDATO	;=0->skip
+	LD	HL,(F_DBUF)
+	LD	A,(IX)
+	CALL	SEND		;Send TCP-Data (SendSIZE BC)
+	JR	NC,RDDATO
+	POP	AF		;adjust stack
+	JR	DHTERM		;terminate
+RDDATO:	CALL	SVTRSZ		;save size +(BC)
+	CALL	SDTIME		;update Timer (CY=0)
+	POP	AF		;EOF?
+	RET	NC		;no->ret
+	CALL	SCLOSE		;active Dsocket-shutdown (offline)!
+	SCF			;like no (more) Data
+	RET
+	;
+;#######################################################
+;### FTP START #########################################
+;#######################################################
+	;check for ZSDOS/ZDDOS and CP/M 2+
+BEGIN:	LD	C,CPMVER
+	CALL	BDOS
+	LD	(SYSVER),A	;CP/M version
+	AND	0F0H
+	CP	20H
+	LD	DE,CPMERR
+	JR	C,ERQUIT	;CP/M 2+ required
+	LD	A,(SYSVER)
+	CP	22H
+	JR	NZ,NLDTZD	;not CP/M 2.2
+	LD	C,CPMEXV
+	CALL	BDOS
+	LD	A,H
+	CP	'S'
+	JR	Z,LOADEC
+	CP	'D'
+	JR	NZ,NLDTZD
+LOADEC:	;ZSDOS/ZDDOS
+	PUSH	AF
+	LD	C,GTCFLG	;get config flags
+	CALL	BDOS
+	LD	(EXTCFG),HL
+	LD	E,07EH
+	LD	C,STBEMD	;set BDOS error-mode
+	CALL	BDOS		;(reseted in WBOOT!)
+	POP	AF
+	JR	LOADDV
+NLDTZD:	XOR	A		;not ZSDOS/ZDDOS
+LOADDV:	LD	(EXTVER),A	;extended CP/M version
+	LD	SP,STACK	;set local stack
+	;parse and test ARG's
+	;
+	;because Network Hardware-Driver is not initialized
+	; here, do not call hardware-related API functions,
+	;    only functions for CONVERSION are allowed!
+	;
+	LD	HL,DMA+1
+	LD	DE,ARGMAX	;ARG-table
+	XOR	A
+	INC	A		;terminate Parameter with 0 
+	CALL	ARGV##		;parse ARG's
+	LD	DE,F_CMXA	;too many ARG's
+	JR	Z,FTPCP0
+ERQUIT:	CALL	ACTOUT		;activate ERR with message
+	JP	F_QUIT
+FTPCP0:	;set default state
+	CALL	PUTUD##		;save away DU:
+	CALL	RETUD##
+	LD	(CUR_DU),BC	;get current DU:
+	LD	(HIF_DU),BC	;for autoload
+	LD	HL,F_STAT
+	PUSH	HL
+	POP	IY		;IY=state table
+	LD	A,01011011B	;binary/passive/prompting/l+r-unique ON
+	LD	(HL),A		;set FTP-state
+	LD	B,4
+FTPCSW:	INC	HL
+	LD	(HL),0		;reset all other states
+	DJNZ	FTPCSW
+	CALL	RDROFF		;reset redirection
+	;test arg's
+	LD	HL,0		;clear PTR to server[:port]
+	LD	A,(ARGN)
+	OR	A
+	JR	Z,FTPCPH	;no ARG's -> load PTR and continue
+	LD	HL,TARG1	;address of ARG-PTR tab
+	LD	(TEMP),HL
+	CALL	GETARG		;get first ARG address
+	JR	FTPCP2
+FTPCP1:	CALL	CNTARG		;count & get next ARG
+	JR	Z,FTPCPE	;all ARG's parsed
+FTPCP2:	LD	A,'-'
+	CP	(HL)
+	JR	NZ,FTPCPH	;-> server[:port]
+	INC	HL
+	LD	C,(HL)		;option char
+	INC	HL
+	LD	A,':'
+	CP	(HL)
+	JR	Z,FTPPO1	;param. option
+	;char option
+FTPCP3:	XOR	A
+	OR	C		;string end?
+	JR	Z,FTPCP1	;next option
+	AND	05FH		;UCASE
+	EX	DE,HL
+	LD	HL,F_SCMD
+	CP	'H'
+	JR	NZ,FTPCO1
+	SET	0,(HL)		;help ON
+FTPCO1:	CP	'V'
+	JR	NZ,FTPCO2
+	SET	1,(HL)		;version ON
+FTPCO2:	LD	HL,F_STAT
+	CP	'I'
+	JR	NZ,FTPCO3
+	RES	3,(HL)		;prompting OFF !
+FTPCO3:	CP	'P'
+	JR	NZ,FTPCO4
+	RES	4,(HL)		;passive open OFF !
+FTPCO4:	CP	'L'
+	JR	NZ,FTPCO5
+	RES	1,(HL)		;lunique OFF !
+FTPCO5:	CP	'R'
+	JR	NZ,FTPCO6
+	RES	0,(HL)		;runique OFF !
+FTPCO6:	EX	DE,HL
+	LD	C,(HL)		;get next char
+	INC	HL
+	JR	FTPCP3
+FTPPO1:	;param. option
+	INC	HL		;address parameter
+	LD	A,C		;option char
+	AND	05FH		;UCASE
+	CP	'S'
+	JR	NZ,FTPCP1	;next option
+	;Script-file
+	CALL	SCRFNT		;(if no ERR->scripting ON)
+	JR	NC,FTPCP1	;Ok -> next option
+	;ERR in DU:FN.FT
+	LD	A,CLLN
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	CALL	MSGOUT		;process OUT message
+	JR	FTPCP1		;continue
+REQUIT:	CALL	ACTOUT		;activate ERR with message
+	JP	FRQUIT		;restore and quit
+FTPCPH:	;HL=PTR to server[:port]
+	LD	(CONTMP),HL	;save PTR
+;------ commandline parsed -> execute ------------------
+FTPCPE:	BIT	0,(IY+1)	;F_SCMD
+	LD	DE,F_HELP
+	JR	NZ,REQUIT	;activate Help and exit
+	BIT	1,(IY+1)
+	CALL	NZ,FTPVER	;show Version
+	JP	NZ,FRQUIT	;and exit
+;-------init and test Network --------------------------
+	;try Network init
+	XOR	A		;DRV->KOP (required only for KC85)
+	CALL	N_INIT
+	CALL	C,ZKOUT		;->DE=ERR-string
+	CALL	C,NEWLN
+	LD	DE,F_VER2
+	JR	C,REQUIT	;activate "-h" and exit
+	;network available
+	CALL	NETTST		;configured?
+	JR	C,REQUIT
+	CALL	ONTEST		;online?
+	JR	C,REQUIT
+;------ try to allocate all TPA-buffers ----------------
+	XOR	A		;full TPA
+	CALL	IALLOC##
+	;control socket structure
+	LD	DE,FCSSIZ
+	CALL	ALLOC##
+	JP	Z,LDQUIT
+	LD	(FCSBUF),HL
+	LD	(HL),0FFH	;reset F_SOCK
+	INC	HL		;retain F_SOCK
+	LD	BC,F_SCKL-1
+	CALL	CLRMEM
+	;data socket structure
+	LD	DE,FDSSIZ
+	CALL	ALLOC##
+	JP	Z,LDQUIT
+	LD	(FDSBUF),HL
+	LD	(HL),0FFH	;reset F_SOCK
+	INC	HL
+	LD	(HL),00000001B	;reset F_SOST
+	INC	HL		;retain F_SOCK+F_SOST
+	LD	BC,F_SCKL-2
+	CALL	CLRMEM
+	;data buffers
+	LD	DE,F_LSIZ	;local commands buffer
+	CALL	ALLOC##
+	JP	Z,LDQUIT
+	LD	(F_LBUF),HL
+	LD	(HIFBUF),HL	;for save/load history data
+	LD	(HL),0		;reset
+	LD	DE,F_RSIZ	;remote commands buffer
+	CALL	ALLOC##
+	JR	Z,LDQUIT
+	LD	(F_RBUF),HL
+	LD	(HL),0		;reset
+	LD	DE,F_CSIZ	;Send control command buffer
+	CALL	ALLOC##
+	JR	Z,LDQUIT
+	LD	(F_CBUF),HL
+	LD	DE,F_MSIZ	;Recv control message buffer
+	CALL	ALLOC##
+	JR	Z,LDQUIT
+	LD	(F_MBUF),HL
+	LD	DE,F_DSIZ	;data buffer
+	CALL	ALLOC##
+	JR	Z,LDQUIT
+	LD	(F_DBUF),HL
+	LD	DE,F_FSIZ	;file I/O buffer
+	CALL	ALLOC##
+	JR	Z,LDQUIT
+	LD	(F_FBUF),HL
+	LD	DE,F_ISIZ	;input buffer
+	CALL	ALLOC##
+	JR	Z,LDQUIT
+	LD	(F_IBUF),HL
+	CALL	CLRIBF		;reset
+	LD	DE,F_HSIZ	;input history buffer
+	CALL	ALLOC##
+	JR	Z,LDQUIT
+	LD	(F_HBUF),HL
+	LD	BC,F_HSIZ
+	CALL	CLRMEM		;reset content
+	LD	HL,0
+	LD	(F_HPTR),HL	;reset hptr
+	LD	DE,SCFREC*128	;script data buffer
+	CALL	ALLOC##
+	JR	Z,LDQUIT
+	LD	(SCFBUF),HL
+	LD	DE,SCFREC*128	;log data buffer
+	CALL	ALLOC##
+	JR	Z,LDQUIT
+	LD	(LOGBUF),HL
+	;remaining memory for DIR buffer
+	LD	DE,F_VSIZ
+	CALL	ALLOC##
+	LD	(F_VBUF),HL	;begin of free TPA
+	LD	(B_VBUF),HL	;backup
+	JR	NZ,FTPSSP
+LDQUIT:	LD	DE,F_CMXD	;no TPA
+	JP	REQUIT
+;------	prepare main loop ------------------------------
+FTPSSP:	LD	HL,(CONTMP)	;server[:port]?
+	LD	A,H
+	OR	L
+	JR	Z,FTPTLG	;no
+	;prepare OPEN command
+	PUSH	HL
+	LD	HL,CMOPEN
+	LD	DE,(F_IBUF)
+	CALL	COPCMD		;copy 'OPEN '
+	POP	HL
+	CALL	COPCMD		;copy server-zstring
+FTPTLG:	;local Date/Time support
+	LD	A,(EXTVER)
+	OR	A
+	JR	Z,NLDTTM	;not ZxDOS
+	SET	4,(IY+4)	;local Date/Time ON
+NLDTTM:	;autoload history
+	LD	DE,HIFCTL
+	CALL	_FYI$OPEN	;HISTORY.FTP?
+	CALL	NZ,HLAUTO	;yes->autoload
+	;get 2 free sockets
+	LD	IX,(FDSBUF)	;Dsocket
+	CALL	SCKRIN
+	LD	DE,F_CMXB	;socket-error
+	CALL	C,ACTOUT
+	JP	C,F_CEND
+	LD	IX,(FCSBUF)	;Csocket(IX!)
+	CALL	SCKRIN
+	LD	DE,F_CMXB	;socket-error
+	CALL	C,ACTOUT
+	JP	C,F_CEND
+	;script and autologin
+	BIT	6,(IY+4)	;script from cmdline?
+	PUSH	AF
+	JR	NZ,SKPAEX	;yes->skip AUTOEXEC.FTP
+	LD	HL,(CONTMP)	;Server from command line?
+	LD	A,H
+	OR	L
+	JR	NZ,SKPAEX	;yes->skip AUTOEXEC.FTP
+	LD	HL,(CUR_DU)
+	LD	(SCR_DU),HL	;load DU:
+	LD	DE,SCFCTL
+	CALL	_OPENT		;Public off
+	CALL	_FYI$OPEN	;AUTOEXEC.FTP
+	CALL	_OPENR		;Public old
+	JR	Z,SKPAEX	;ERR
+	SET	6,(IY+4)	;scripting ON
+SKPAEX:	POP	AF		;script from cmdline?
+	LD	DE,F_CMXL
+	CALL	Z,ZKOUT		;no->Welcome-MSG out
+	CALL	NZ,SCROSF	;yes->open script file (ERR->scripting OFF)
+	LD	HL,(CONTMP)	;Server from command line?
+	LD	A,H
+	OR	L
+	JP	NZ,INEXE	;-> OPEN (IY=state table/IX=Csocket!)
+;--- User Protocol Interpreter (user-PI) ---------------
+LINLP:	;--- Line loop ---
+	LD	IY,F_STAT	;state table
+	CALL	MSGOUT		;pending message to CON:
+	BIT	3,(IY+1)
+	JR	NZ,PRMNO	;Prompt OFF
+	LD	A,(F_SCMD)
+	AND	80H+40H
+	LD	DE,(RDRPRO)	;Redirect-Prompt
+	CALL	NZ,LZKOUT	;into log and Out
+	JR	NZ,PRMNO	;redirect or Callback active
+	BIT	0,(IY+1)	;rebuild cmdline?
+	JR	NZ,PRMPT	;->yes
+	;reset current pos.
+	CALL	MOVCP1		;Cursor -> POS1 ...
+	LD	A,CR
+	CALL	COUT##		;... and begin of cmdline
+PRMPT:	BIT	7,(IY+3)
+	JR	Z,PRMPL		;Transfer OFF
+	;Transfer prompt Out
+	LD	HL,(DSKTSZ)
+	CALL	PHLFDC##	;size kB Out
+	LD	DE,CMDPRT	;' kB> '
+	JR	PRMPC
+PRMPL:	;Local prompt Out
+	LD	DE,(CUR_DU)	;current DU:
+	LD	HL,CMDDIR
+	PUSH	HL
+	CALL	WRCDIR		;write DU/DIR:
+	POP	DE
+	CALL	ZKOUT		;Out
+	LD	DE,CMDPRN	;'ftp> '
+PRMPC:	CALL	ZKOUT		;Prompt Out
+	CALL	IBFOUT		;InBuffer Out
+PRMNO:	RES	0,(IY+1)	;cmdline rebuilt
+	JR	CHRST		;skip Char out
+CHRLP:	;--- Char loop ---
+	;sign in A into buffer and out
+	CALL	CHARIN
+	LD	B,1
+	JR	C,CHRBL		;not printable only once
+	LD	HL,F_SCMD
+	BIT	5,(HL)
+	JR	Z,CHRBL
+	;blur active
+	LD	A,R
+	AND	3
+	INC	A		;->1-4 char
+	LD	B,A
+CHRBD:	LD	A,'*'
+CHRBL:	CALL	COUT7##		;Char('s) Out
+	DJNZ	CHRBD
+CHRST:	;--- input loop ---
+	LD	IY,F_STAT	;load state table
+	LD	IX,(FCSBUF)	;load Csocket
+	;local get
+	CALL	LINPUT
+	JR	NC,INENT	;->do script cmd
+	OR	A
+	JR	Z,REMST		;->no input
+	BIT	2,(IY+2)	;abort request active?
+	JR	NZ,REMST	;yes->lock local input
+	BIT	7,(IY+1)	;Callback function ON?
+	JR	NZ,REMST	;yes->lock local input
+	;local execute
+	BIT	4,(IY+1)	;one-char input ON?
+	JR	Z,CHRDO		;no
+	PUSH	AF
+	CALL	ISPRINT##	;20H-7EH?
+	CALL	Z,COUT##	;yes->out
+	POP	AF
+	JR	INENT		;and go
+CHRDO:	CALL	CHRCTR		;do Char in A
+	BIT	0,(IY+1)	;rebuild cmdline?
+	JP	NZ,LINLP	;yes
+	CP	ENT
+	JR	NZ,CHRLP	;->char loop
+INENT:	CALL	NEWLN
+INEXE:	CALL	LOCEXE		;process F_IBUF content
+	BIT	1,(IY+2)	;quit requested?
+	JP	NZ,LPQUIT	;yes->quit user-PI
+	BIT	2,(IY+2)	;Abort requested?
+	JR	NZ,REMSTC	;yes->immediately send
+	JP	LINLP		;cmd message Out!
+REMST:	;remote get
+	BIT	7,(IX+F_SOST)	;online?
+	JR	Z,CHRST		;no->loop
+	BIT	7,(IY+2)	;pending message?
+	JR	NZ,REMSTN	;yes->skip
+	BIT	5,(IY+2)	;pending multimessage?
+	JR	NZ,REMRCM	;yes->parse
+	LD	A,(IX)
+	LD	E,SL_RECV	;Receiver
+	CALL	SELECT
+	JR	C,REMSTN	;Rx buffer empty
+REMRCM:	CALL	RCCDAT		;parse and receive messages
+	SET	6,(IY+2)	;activate incomplete message
+	JR	C,REMSTN	;wait
+	LD	DE,(F_MBUF)	;message ready
+	SBC	HL,DE
+	LD	(RPLYSZ),HL	;save message length
+	RES	6,(IX+F_SOST)	;quit wait
+	RES	6,(IY+2)	;quit incomplete message
+	SET	7,(IY+2)	;activate received message
+REMSTN:	;remote execute
+	BIT	7,(IY+1)
+	JR	Z,REMSTC	;Callback function OFF
+	LD	HL,(CBADDR)	;callback address
+	CALL	JMPIHL
+	LD	IY,F_STAT	;(re)load state table
+	LD	IX,(FCSBUF)	;(re)load Csocket
+	BIT	1,(IY+2)	;quit requested?
+	JP	NZ,LPQUIT	;yes->quit user-PI
+	BIT	6,(IY+1)	;redirect activated?
+	JP	NZ,LINLP	;yes->rebuild line
+	BIT	7,(IY+1)	;Callback deactivated?
+	JP	Z,LINLP		;yes->rebuild line
+REMSTC:	BIT	0,(IY+2)	;message to send?
+	JR	Z,DSCKST	;no->skip
+	LD	A,(IX)
+	LD	E,SL_SEND
+	CALL	SELECT
+	JR	C,DSCKST	;Tx buffer full
+	CALL	SCCDAT		;send message, activate wait
+	CALL	NC,SNDDBG	;SENT! Debug Out
+	RES	0,(IY+2)	;quit message
+	JP	CHRST
+DSCKST:	;--- Dsocket processing ---
+	LD	IX,(FDSBUF)	;Load Dsocket
+	BIT	7,(IY+3)	;Transfer active?
+	JP	Z,CTRST		;no->skip
+	BIT	6,(IY+1)	;redirect active?
+	JP	NZ,CTRST	;yes->skip
+	BIT	5,(IX+F_SOST)	;Flush Data?
+	JR	NZ,DSCKRD	;yes->read
+	BIT	1,(IX+F_SOST)	;Transfer ERR?
+	JR	NZ,DSCKSE	;yes->return
+DSCKRD:	LD	HL,(DSCKUP)
+	CALL	JMPIHL		;Data-Handler
+	BIT	6,(IY+1)	;redirect activated (DIR input!)?
+	JP	NZ,LINLP	;yes->rebuild line
+	JR	C,DSCKTS	;No (more) Data or Err
+	BIT	3,(IY+1)
+	JR	NZ,CTRST	;DIR data -> continue
+	JP	LINLP		;file data -> transfer size out
+DSCKTS:	;check Dsocket state
+	LD	A,(IX)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	LD	A,S_CLOSED	;closed?
+	CP	E
+	JR	Z,DSCKSE
+	LD	A,S_CLSWAIT	;closing?
+	CP	E
+	JR	NZ,CTRST	;no->continue
+DSCKSE:	;->return to command
+	BIT	3,(IY+1)
+	JR	NZ,DSCKSR	;DIR data
+	LD	HL,(F_LBUF)
+	PUSH	HL
+	LD	DE,(DSCKNM)
+	INC	DE		;FCB+1
+	CALL	MWFNFT		;write FN.FT
+	LD	HL,(DSKTSZ)
+	CALL	MHLFDC##	;write final-size
+	LD	HL,CMDPRT	;' kB> ' 
+	CALL	COPCMD
+	CALL	ENTER
+	CALL	NEWLN		;next cmdline
+	POP	DE
+	CALL	LZKOUT		;final MSG out
+DSCKSR:	RES	7,(IY+3)	;Transfer OFF ...
+	LD	HL,(DSCKRT)
+	LD	DE,CMNULL	;dummy
+	LD	A,80H
+	CALL	RDREXE		;... RPL ON
+CTRST:	;--- Csocket State ---
+	LD	IX,(FCSBUF)	;Csocket
+	BIT	3,(IY+2)	;close requested?
+	JP	NZ,CHRST	;yes->skip state test
+	LD	A,(IX)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	LD	HL,F_CMXH	;'connection closed'
+	LD	A,S_CLSWAIT
+	CP	E
+	JR	Z,CHRER
+	LD	A,S_CLOSED
+	CP	E
+	JP	NZ,CHRST	;continue
+CHRER:	CALL	LNEWLN
+	BIT	7,(IY+2)	;pending message?
+	JR	Z,CHREM
+	CALL	CDAOUT		;yes-> Msg out
+	LD	A,BEEP
+	CALL	COUT##
+	JR	CHREN
+CHREM:	EX	DE,HL		;otherwise close message
+	CALL	ACTOUT
+CHREN:	CALL	CLOSUP		;reset user-PI
+	JP	LINLP		;line loop
+;-------------------------------------------------------
+LPQUIT:	;FTP Quit
+	BIT	7,(IX+F_SOST)	;online?
+	JR	Z,F_CEND
+	;close open connection
+	LD	A,(IX)
+	CALL	SHUTDN
+	LD	DE,F_CMXH	;'connection closed'
+	CALL	ACTOUT
+F_CEND:	;close open files and release sockets
+	BIT	6,(IY+4)	;script active?
+	CALL	NZ,SCRFCL	;yes->close
+	BIT	7,(IY+4)	;log active?
+	CALL	NZ,LOGFCL	;yes->close
+	LD	HL,(FCSBUF)
+	LD	A,(HL)		;get handle
+	INC	(HL)		;allocated?
+	CALL	NZ,CLOSE	;yes->release socket
+	LD	HL,(FDSBUF)
+	LD	A,(HL)		;get handle
+	INC	(HL)		;allocated?
+	CALL	NZ,CLOSE	;yes->release socket
+FRQUIT:	;restore saved DU:
+	CALL	_GETUD
+F_QUIT:	;FTP Quit
+	CALL	MSGOUT		;pending message to CON:
+	LD	A,0C9H
+	LD	(SNOGO),A	;suppress go
+	LD	C,WBOOT		;go to CP/M
+	CALL	BDOS		;don't JUMP (gives an
+				;Error with Z-System)
+;****** local Stack ************************************
+	DS	128,0		;depth = 64
+STACK	EQU	$
+;*******************************************************
+EEMAIN	EQU	$		;last ADR main program
+;****** Code-End ***************************************
+
+IF2        
+	.PRINTX "FTPxx.COM"
+	.RADIX  16
+        PRMSG   <KCN-INC LENGTH:>,%(AAMAIN-103H)
+        PRMSG   <    MAIN BEGIN:>,%AAMAIN
+        PRMSG   <   MAIN LENGTH:>,%(EEMAIN-AAMAIN)
+        PRMSG   <  LAST ADDRESS:>,%EEMAIN
+        PRMSG   <PROGRAM LENGTH:>,%(EEMAIN-100H)
+	.RADIX  10
+ENDIF
+	.DEPHASE
+	END
+

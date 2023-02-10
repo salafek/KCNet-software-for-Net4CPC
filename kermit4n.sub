@@ -1,0 +1,15 @@
+
+; ### KERMIT 80 CP/M 2.x ###
+
+; the following includes are required:
+
+;	KCNET.INC	(KCNet configuration)
+;	N4C-W51.INC	(KCNet driver Net4CPC - W5100S)
+;	W5100-12.INC	(WIZnet HW-TCP/IP-Driver)
+;	DNSC-11.INC	(DNS-Client)
+
+; --- KERMIT-80 over TCP/IP KERMIT4N.COM ---
+
+m80 cpxtyp.rel=cpxtyp.asm
+l80 /p:7000,cpxtyp.rel,cpxtyp.hex/n/x/e
+mload KERMIT.COM=cpsker.hex,cpxtyp.hex

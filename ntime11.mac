@@ -1,0 +1,1631 @@
+;*******************************************************
+;
+;    Simple Network Time Protocol v4 Client CP/M 2+
+;
+;		###     KCNET     ###
+;		 WIZnet TCP/IP-Stack 
+;		###  susowa 2008  ###
+;
+;  Name		: NTIMExx.MAC
+;  Date		: 24.01.2010
+;  Modified	: 20.02.2012
+;		: 21.11.2022 d_kef
+;  Hardware	: Net4CPC - W5100S
+;
+;  extern       : SYSLIB.REL
+;
+;  Includes:
+;     KCNET.INC - Configuration
+;   N4C-W51.INC - Interface driver Net4CPC W5100S
+;  W5100-12.INC - TCP/IP and Socket driver
+;   DNSC-10.INC - DNS client
+;  Z8032BIT.INC - 32 bit integer arithmetic
+;
+;*******************************************************
+
+;*** VERSION *******************************************
+V_MAJOR	EQU	1
+V_MINOR	EQU	1
+;*** MACROS ********************************************
+NO	EQU	0
+YES	EQU	NOT NO
+	;
+PRMSG   MACRO   MSG,N       
+	.PRINTX *MSG,N*
+	ENDM
+;*** common Equations **********************************
+	;destination
+        .PHASE  00100H
+	;CPU
+	.Z80
+	;CP/M 2+ constants
+BDOS	EQU	5
+DMA     EQU	80H
+	;BDOS
+WBOOT	EQU	0		;warm boot
+CPMVER	EQU	12		;get CP/M-Version
+CPMEXV	EQU	48		;get extended Version
+;*******************************************************
+
+;*** Start of Code *************************************
+	;start address
+	JP	BEGIN
+	;ZCPR
+	DB	'Z3ENV'
+	DB	1		;type 1
+Z3EPTR:	DW	0		;pointer
+	;"KCNet" files
+	INCLUDE	KCNET.INC	;config file
+;
+	CKMAC	EQU	NO
+	INCLUDE	N4C-W51.INC	;Net4CPC - W5100S routines
+;
+	INCLUDE	W5100-12.INC	;TCP/IP+Socket-Driver
+;
+	INCLUDE	DNSC-11.INC	;DNS-Client
+;
+	;first address main
+AAMAIN	EQU	$
+	;Math routines by Werner Cirsovius
+	INCLUDE	Z8032BIT.INC	;32 bit int arithmetic
+;*******************************************************
+
+;### NTPv4 CONSTANTS & STRUCTURES ######################
+;--- NTP-Server ZStrings pre-configured for Greece ----
+	;(server addresses can be customized, unused
+	;entries must end with a binary 0, at least
+	;       one entry has to be defined)
+NTP1:	DB	'0.gr.pool.ntp.org',0
+NTP2:	DB	'1.gr.pool.ntp.org',0
+NTP3:	DB	'2.gr.pool.ntp.org',0
+NTP4:	DB	'3.gr.pool.ntp.org',0
+;--- Symbols and Structures ----------------------------
+T_VN4	EQU	4 SHL 3		;NTPv4 required
+T_SMD	EQU	4 SHL 0		;required mode in server reply
+	;
+T_LI	EQU	3 SHL 6		;LI mask
+T_VN	EQU	7 SHL 3		;VN mask
+T_MODE	EQU	7 SHL 0		;MODE mask
+;
+LIVNMD	EQU	0		;Leap Indicator/Version Number/Mode
+STRATUM	EQU	LIVNMD+1	;Stratum
+POLLIV	EQU	STRATUM+1	;Poll Interval
+PRECIS	EQU	POLLIV+1	;Precision
+RTDLAY	EQU	PRECIS+1	;Root Delay
+RTDSPN	EQU	RTDLAY+4	;Root Dispersion
+REFIDN	EQU	RTDSPN+4	;Reference Identifier
+REF_TS	EQU	REFIDN+4	;Reference Timestamp
+ORI_TS	EQU	REF_TS+8	;Originate Timestamp
+REC_TS	EQU	ORI_TS+8	;Receive Timestamp
+TRA_TS	EQU	REC_TS+8	;Transmit Timestamp
+KEYIDN	EQU	TRA_TS+8	;Key Identifier (optional)
+MSGDGS	EQU	KEYIDN+4	;Message Digest (optional)
+MSGEND	EQU	MSGDGS+16	;end
+	;
+T_CBLG	EQU	MSGEND-LIVNMD	;length
+;#######################################################
+
+;*** Work RAM *****************************************************
+BSSTAM:	DB	0		;screen state (KC85)
+SYSVER:	DB	0		;CP/M-Version
+EXTVER:	DB	0		;extended CP/M-Version
+	;NTIME-State
+NTSTAT:	DB	0
+	;7 = 1 - (TXPMSG) message-pointer active
+	;6 = 1 - 
+	;5 = 1 - NTP server cmdline active
+	;4 = 1 - Test mode active
+	;3 = 1 - Random server sequence active
+	;2 = 1 - Full output ON
+	;1 = 1 - Show Version ON / Request terminated by program
+	;0 = 1 - Show Help ON / Request terminated by user
+	;network
+T_SCK:	DB	0FFH		;socket-handle
+T_PEER:	DB	0,0,0,0		;NTP Server-IP NOrder
+T_PORT:	DB	0,123		;Standard NTP Server-Port NOrder
+T_SNAM:	DW	0000H		;ZString address of queried server 
+T_NBUF:	DW	0000H		;holds PTR to domain name buffer
+T_MBUF:	DW	0000H		;holds PTR to message buffer
+T_PREC:	DB	0,0,0,0		;Received NTP-IP NOrder
+	DB	0,0		;Received NTP-Port NOrder
+T_SIZN:	DB	0,0		;Received Datasize NOrder
+T_SIZH:	DB	0,0		;Received Datasize HOrder
+	;32-bit integer arithmetic
+DINSIN:	DB	0		;reserved for SIN32
+..RES:	DS	10,0		;max. digits dec. string
+RES.LEN	equ	$-..RES		;length
+$$NUM:	DB	0,0,0,0		;first number
+$NUM:	DB	0,0,0,0		;second number
+$RES:	DB	0,0,0,0		;result
+	;local client Transmit Timestamp for compare
+T_RSEK:	DB	0,0,0,0		;seconds
+	DB	0,0,0,0		;fraction (randomly filled))
+	;NTP time of day from server
+T_TSEK:	DB	0,0,0,0		;Seconds
+T_TFRC:	DB	0,0,0,0		;Seconds Fraction (0-padded)
+	;time offset in seconds from NTP-UTC to CP/M-UTC
+TOFCPM:	DB	092H,0B6H,0BDH,080H ;-2.461.449.600 s
+	;local time offset's (pre-configured for MET)
+T_ZSGN:	DB	'+'		;MET offset sign
+T_ZOFS:	DB	0,0,00EH,010H	;MET offset = 3600s (32Bit NOrder)
+T_DSGN:	DB	'+'		;Daylight Savings time offset sign
+T_DOFS:	DB	0,0,0,0		;Daylight Savings time offset = 0s (32Bit NOrder)
+	;CP/M time
+T_UCPM:	DB	0,0,0,0		;seconds CP/M-UTC NOrder
+T_LCPM:	DB	0,0,0,0		;seconds local time zone NOrder
+T_DCPM:	DB	0,0,0,0		;seconds Daylight Savings time NOrder
+T_DCC1:	DB	0,0,0,0		;copy of T_DCPM for time calculation 1
+T_DCC2:	DB	0,0,0,0		;copy of T_DCPM for time calculation 2
+S_DAY:	DB	0,01H,051H,080H ;seconds of one day (60*60*24)
+	;binary date and time 1: YY/M/D h:m:s
+T_YEAR:	DW	00		;year (S_DAY * 365/366)
+T_MONT:	DB	0		;month (S_DAY * 28/29/30/31)
+T_DAY:	DB	0		;day (S_DAY)
+T_HOUR:	DB	0		;hour (3600s)
+T_MIN:	DB	0		;minute (60s)
+T_SEC:	DB	0		;second (rest)
+	;binary date and time 2: DD h:m:s
+TPDAYS:	DW	00		;16 Bit day's (S_DAY)
+TPHOUR:	DB	0		;hour (3600s)
+TPMIN:	DB	0		;minute (60s)
+TPSEC:	DB	0		;second (rest)
+	;BCD date and time for ZxDOS
+DATBCD:	DB	0,0,0		;BCD-date CTC/RTC (YY/MM/DD)
+TIMBCD:	DB	0,0,0		;BCD-time CTC/RTC (hh/mm/ss)
+	;BIN date and BCD time for CP/M Plus
+PDTBIN:	DW	00		;BIN 16 bit day's CP/M Plus
+PTMBCD:	DB	0,0,0		;BCD time for CP/M Plus
+	;ASCII string for output of 32-bit dec. numbers
+ASC32:	DS	10+1,0
+	;NTP server ZString addresses
+SV_CMD:	DW	0		;PTR's to be queried
+	DW	0
+	DW	0
+	DW	0
+SV_PRC:	DW	NTP1		;PTR's pre-configured
+	DW	NTP2
+	DW	NTP3
+	DW	NTP4
+	;Table for ARGV## - addresses
+ARGMAX:	DB	9		;max. 9 Arguments
+ARGN:	DB	0		;Number of Arguments found
+TARG1:	DW	0		;ADR ARG1
+TARG2:	DW	0		;ADR ARG2
+TARG3:	DW	0		;ADR ARG3
+TARG4:	DW	0		;ADR ARG4
+TARG5:	DW	0		;ADR ARG5
+TARG6:	DW	0		;ADR ARG6
+TARG7:	DW	0		;ADR ARG7
+TARG8:	DW	0		;ADR ARG8
+TARG9:	DW	0		;ADR ARG9
+TXPMSG:	DW	TXTERR		;message pointer
+TEMP:	DS	10,0		;temp. buffer
+	;Messages
+TXTERR:	DB	CLLN,'Unknown Error !',BEEP,'$'
+TXSRNI:	DB	CLLN,'Request to ','$'
+TXSANI:	DB	CLLN,'Reply from ','$'
+TXSPSI:	DB	CR,LF,'Stratum 1 NTP server with primary reference'
+	DB	CR,LF,'Primary reference code: ','$'
+TXSSI1:	DB	CR,LF,'Stratum ','$'
+TXSSI2:	DB	' NTP server with secondary reference'
+	DB	CR,LF,'Secondary reference: ','$'
+TXSSY1:	DB	CR,LF,'Last synchronization took place ','$'
+TXSSY2:	DB	' seconds ago.','$'
+TXUTC1:	DB	CR,LF
+	DB	'   UTC - NTP : ','$'
+TXUTC2:	DB	CR,LF
+	DB	'  UTC - CP/M : ','$'
+TXUTC3:	DB	CR,LF
+	DB	'   Time zone : ','$'
+TXTIME: DB	CR,LF
+	DB	' Date & Time : ','$'
+TXTMOK:	DB	CR,LF
+	DB	' System time has been set successfully.','$'
+TXCLOK:	DB	CR,LF
+	DB	' System clock has been set successfully.','$'
+TXCLER:	DB	CR,LF
+	DB	' Setting system clock failed!',BEEP,'$'
+	;SYS-Error message
+CPMERR:	DB	'CP/M-Version 2+ required !',BEEP,CR,LF,'$'
+	;Start Error's
+T_CMXA:	DB	'Too many arguments !',BEEP,'$'
+T_CMXB:	DB	'No socket available !',BEEP,'$'
+T_CMXC:	DB	'Cannot open socket !',BEEP,'$'
+T_CMXD:	DB	'More TPA required !',BEEP,'$'
+T_CMXE: DB	'Cannot find NTP server name or IP-address !',BEEP,'$'
+	;NTIME-Usage
+TM_HLP:	DB	'ntime [-h|v] [-fr] [+|-h] [+|-m] [NTP-Server ...]',CR,LF
+	DB	LF
+	DB	'     Options:',CR,LF
+	DB	LF
+	DB	'       -h|v - Show help or version and exit',CR,LF
+	DB	'         -f - Full Output',CR,LF
+	DB	'         -r - Random sequence of NTP server addresses',CR,LF
+	DB	'       +|-h - Time Zone offset in hours to UTC (dec.)',CR,LF
+	DB	'       +|-m - Daylight Savings time offset in minutes (dec.)',CR,LF
+	DB	' NTP-server - up to 4 NTP server name(s) or IP-address(es)'
+	DB	'$'
+	;NTIME-Version
+TM_VE1:	DB	'###       SNTP Client CP/M 2+       ###',CR,LF
+	DB	'              Version ',V_MAJOR+'0','.',V_MINOR+'0',CR,LF
+	DB	'          "KCNet TCP/IP-Stack"',CR,LF
+	DB	'### copyright 2010-2011 by >susowa< ###',CR,LF
+	DB	LF,'$'
+TM_VE2:	DB	CR,LF
+	DB	'           Show Help with -h','$'
+	;
+;*** How To use NTP messages for CP/M date & time *****************
+;
+; NTIME.COM requires a NTP time server, Version 4 for IPv4. The 
+; implementation basis is RFC 4330. The program normalizes UTC
+; (Universal Time Coordinated) from the server to CP/M date and 
+; time and converts it to the time of a given local time zone. It
+; is preconfigured for MET (Middle European Time).
+;
+; A time server, which works according to rfc 4330, provides the
+; last seconds since 01.01.1900 00:00:00. It presents them in 4
+; bytes (32 bit unsigned int) in the so-called Network order
+; (big-endian). So the server counts the seconds from 0 up to
+; 4.294.967.295 (2^32-1). Then it overflows to 0, one period lasts
+; about 136 years. The next overflow takes place in 2036.
+;
+; CP/M date and time refer to the 01.01.1978 00:00:00. Therefore 
+; the UTC time of the NTP server has to be normalized to CP/M time.
+; From the time stamp of the time server must be subtracted 
+; 2.461.449.600 seconds:
+;
+;	 78 years * 365 days + 19 days (Leapyears)
+;
+;	   sec*min*hour*365*78 + sec*min*hour*19 
+;	 = 60*60*24*365*78 + 60*60*24*19
+;	 = 2.461.449.600 (92B6.BD80H)
+;
+; The result is a CP/M conforming timestamp, that represents the
+; last seconds since 01.01.1978 00:00:00.
+;
+; This subtraction has a nice side effect. Even after the overflow
+; of the NTP-UTC time stamp in 2036, the date and time for a 
+; CP/M-RTC with two-digit year (xx78 - xx77) is always correctly
+; calculated, at least until 2077, when the RTC overflows :-).
+;
+; To get the local time, the time zone displacement is then taken
+; into account (+ or -). In Germany, we have UTC plus 1 hour - if
+; it is, therefore 13:00 UTC, then it is 14:00 Local Time in 
+; Germany. Consequently, 3600 seconds have to be added.
+;
+; With this value the Local Date and Time for CP/M can be
+; calculated, taking account of leap years since 1978! The 
+; calculation is done by subtracting the individual components of
+; date and time until an underflow occurs. The rest of the
+; subtraction is the basis for the next calculation:
+;
+; Year   : - 60*60*24*365/366
+; Month  : - 60*60*24*28/29/30/31
+; Day    : - 60*60*24
+; Hour   : - 60*60
+; Minute : - 60
+; Second : = rest
+;
+; After conversion of the result to BCD format, the RTC or 
+; CTC-clock of a system can be set.
+;
+;********************** NTP message structure *********************
+;		       1		   2		       3
+;  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+; |LI | VN  |Mode |    Stratum    |      Poll     |   Precision   |
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+; |			Root Delay				  |
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+; |			Root Dispersion				  |
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+; |			Reference Identifier			  |
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+; |			Reference Timestamp (64)		  |
+; |								  |
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+; |			Originate Timestamp (64)		  |
+; |								  |
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+; |			Receive Timestamp (64)			  |
+; |								  |
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+; |			Transmit Timestamp (64)			  |
+; |								  |
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+; |			Key Identifier (optional) (32)		  |
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+; |								  |
+; |			Message Digest (optional) (128)		  |
+; |								  |
+; |								  |
+; +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+;
+;	Leap Indicator (LI)
+;       ----------------------------------------------------------
+;	0 no warning
+;	1 last minute has 61 seconds
+;	2 last minute has 59 seconds
+;	3 alarm condition (clock not synchronized)
+;
+;	Version Number (VN)
+;       ----------------------------------------------------------
+;	This is a three-bit integer indicating the NTP/SNTP 
+;	version number.
+;
+;	Mode
+;       ----------------------------------------------------------
+;	0 reserved
+;	1 symmetric active
+;	2 symmetric passive
+;	3 client
+;	4 server
+;	5 broadcast
+;	6 reserved for NTP control message
+;	7 reserved for private use
+;
+;	Stratum
+;       ----------------------------------------------------------
+;	0 kiss-o’-death message (kiss-code in Ref. Identifier)
+;	1 primary reference (e.g., synchronized by radio clock)
+;	2-15 secondary reference (synchronized by NTP or SNTP)
+;	16-255 reserved
+;
+;	Reference Identifier
+;
+;	Stratum 1 primary referenced servers:
+;
+;		Code for External Reference Source
+;       ----------------------------------------------------------
+;	LOCL	uncalibrated local clock
+;	CESM	calibrated Cesium clock
+;	RBDM	calibrated Rubidium clock
+;	PPS	calibrated quartz clock or other pulse-per-second
+;		source
+;	IRIG	Inter-Range Instrumentation Group
+;	ACTS	NIST telephone modem service
+;	USNO	USNO telephone modem service
+;	PTB	PTB (Germany) telephone modem service
+;	TDF	Allouis (France) Radio 164 kHz
+;	DCF	Mainflingen (Germany) Radio 77.5 kHz
+;	MSF	Rugby (UK) Radio 60 kHz
+;	WWV	Ft. Collins (US) Radio 2.5, 5, 10, 15, 20 MHz
+;	WWVB	Boulder (US) Radio 60 kHz
+;	WWVH	Kauai Hawaii (US) Radio 2.5, 5, 10, 15 MHz
+;	CHU	Ottawa (Canada) Radio 3330, 7335, 14670 kHz
+;	LORC	LORAN-C radionavigation system
+;	OMEG	OMEGA radionavigation system
+;	GPS	Global Positioning Service
+;       ----------------------------------------------------------
+;
+;	Stratum 2-15 IPv4 secondary referenced servers:
+;
+;	this value is the 32-bit IPv4 address of the synch. source
+;
+;
+;	(For further information look into RFC 4330.)
+;
+;### common SUB-programs ###############################
+	;clear RAM
+CLRMEM:	LD	(HL),0
+	LD	D,H
+	LD	E,L
+	INC	DE
+	DEC	BC
+	LDIR
+	RET
+	;CR+LF Out
+NEWLN:	PUSH	AF
+	LD	A,CR
+	CALL	COUT##
+	LD	A,LF
+	CALL	COUT##
+	POP	AF
+	RET
+	;(HL) 32 bit number to CON Out
+A32OUT:	LD	DE,ASC32
+	LD	B,0
+	CALL	dout32		;convert ...
+	LD	DE,ASC32	;... out -> 
+	;(DE)-string+0/'$' Out
+ZKOUT:	PUSH	AF
+ZKOU1:	LD	A,(DE)
+	INC	DE
+	AND	A
+	JR	Z,ZKOU2
+	CP	'$'
+	JR	Z,ZKOU2
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	ZKOU1
+ZKOU2:	POP	AF
+	RET
+	;2 BCD digits to CON Out
+AHEX:	PUSH	AF
+	RRA
+	RRA
+	RRA
+	RRA
+	CALL	AHEX0		;first call
+	POP	AF		;then walk into
+AHEX0:	AND	0FH
+	ADD	A,90H
+	DAA
+	ADC	A,40H
+	DAA
+	CALL	COUT##
+	RET
+	;(HL) IP-Address to CON Out
+IPOUT:	PUSH	AF
+	PUSH	DE
+	PUSH	BC
+	LD	DE,TEMP
+	CALL	I_NTOA		;convert
+	CALL	ZKOUT		;Out
+	LD	DE,4
+	ADD	HL,DE
+	POP	BC
+	POP	DE
+	POP	AF
+	RET
+	;show Version
+TM_VER:	PUSH	AF
+	LD	DE,TM_VE1
+	CALL	ZKOUT
+	LD	DE,N_DLBL	;IF-driver label
+	CALL	ZKOUT
+	LD	DE,TM_VE2
+	CALL	ZKOUT
+	POP	AF
+	RET
+	;compare (DE)-(HL) 2/4/6 Byte
+CMP2BT:	LD	BC,2
+	JR	CMPBTL
+CMP4BT:	LD	BC,4	
+	JR	CMPBTL
+CMP6BT:	LD	BC,6
+CMPBTL:	LD	A,(DE)
+	INC	DE
+	CPI
+	RET	NZ
+	JP	PE,CMPBTL
+	RET			;Z=1 same
+	;compare A-(HL) 2/4/6 Byte
+CPA2BT:	LD	BC,2
+	JR	CPABTL
+CPA4BT:	LD	BC,4	
+	JR	CPABTL
+CPA6BT:	LD	BC,6
+CPABTL:	CPI
+	RET	NZ
+	JP	PE,CPABTL
+	RET			;Z=1 same
+	;count & get ARG-PTR
+CNTARG:	LD	HL,ARGN
+	DEC	(HL)
+	RET	Z
+GETARG:	;get+next ARG
+	LD	HL,(TEMP)
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	INC	HL
+	LD	(TEMP),HL	;save next ARG-PTR
+	EX	DE,HL		;HL: address ARG
+	RET
+	;make 4 Random-Bytes to (HL)
+MZ4ID:	LD	A,R
+	LD	(HL),A
+	INC	HL
+	ADC	A,080H
+MZ4IDW:	DEC	A
+	JR	NZ,MZ4IDW
+	LD	A,R
+	LD	(HL),A
+	INC	HL
+	ADD	A,080H
+	LD	(HL),A
+	INC	HL
+	LD	A,R
+	LD	(HL),A
+	RET
+	;Online-Test with ERR-Message to CON
+	;PO:	CY=1 offline
+ONTEST:	CALL	N_LSTA		;LINK STATE
+	XOR	A
+	OR	E		;OK?
+	LD	DE,NONTXT
+	JR	NETTSE
+NONTXT:	DB	'Network-cable not connected !',BEEP,'$'
+	;Network-Test with ERR-Message to CON
+	;PO:	CY=1 not configured
+NETTST:	LD	HL,TEMP		;local network
+	PUSH	HL
+	CALL	N_GLIP		;read IP
+	CALL	N_GLMA		;read MASK
+	XOR	A
+	LD	DE,NKNTXT
+	POP	HL
+	CALL	CPA4BT		;IP 4*000 ?
+	JR	Z,NETTSE	;not conf.
+	CALL	CPA4BT		;SNM 4*000 ?
+NETTSE:	CALL	Z,ZKOUT
+	SCF			;Error
+	RET	Z		;not conf./offline
+	CCF			;OK
+	RET
+NKNTXT:	DB	'Network not configured !',BEEP,'$'
+	;calculate Time-Diff. in ms
+	;PI: DE - old Timer
+CALCPT:	CALL	N_TIME		;get Timer NOW
+CALCPU:	OR	A
+	SBC	HL,DE		;NOW-(DE-Time)
+	RET	NC		;OK
+	LD	DE,N_XTIME
+	ADC	HL,DE		;correct Overflow
+	RET
+;### Date and Time SUB-programs ########################
+	;get additional leapyear day
+	;PI: HL - year (4 digits, Gregorian Calendar)
+	;PO:  A - # of additional days
+	;AR: AF
+LPYEAR:	PUSH	HL
+	LD	A,L
+	AND	3		;/4 ?
+	JR	NZ,LPYEA0	;no
+	PUSH	DE
+	LD	DE,100
+	CALL	SDIV##
+	LD	A,H
+	OR	L		;/100 ?
+	LD	A,E
+	POP	DE
+	JR	NZ,LPYEA1	;no
+	AND	3		;/400 ?
+	JR	Z,LPYEA1	;yes
+LPYEA0:	LD	A,0		;not a leapyear
+	POP	HL
+	RET
+LPYEA1: LD	A,1		;leapyear
+	POP	HL
+	RET
+	;get days of month
+	;PI:  A - month (1-12)
+	;    HL - year (4 digits, Gregorian Calendar)
+	;PO:  A - # of days
+	;AR: AF
+MXDMON:	CP	2
+	JR	Z,MXDMO2
+	CP	8
+	JR	C,MXDMO1
+	XOR	1
+MXDMO1:	AND	1
+	ADD	A,30
+	RET
+MXDMO2:	CALL	LPYEAR
+	ADD	A,28
+	RET
+GETLOC:	;convert NTP-UTC seconds to local CP/M time seconds
+	;NTP-UTC->CPM-UTC (sub offset)
+	LD	BC,T_TSEK
+	LD	DE,TOFCPM
+	LD	HL,T_UCPM
+	CALL	sub32
+	;CPM-UTC->local time zone (add|sub offset)
+	LD	BC,T_UCPM
+	LD	DE,T_ZOFS
+	LD	HL,T_LCPM
+	LD	A,(T_ZSGN)
+	CP	'+'
+	CALL	Z,add32
+	CP	'-'
+	CALL	Z,sub32
+	;local time zone->Daylight Savings time (add|sub offset)
+	LD	BC,T_LCPM
+	LD	DE,T_DOFS
+	LD	HL,T_DCPM
+	LD	A,(T_DSGN)
+	CP	'+'
+	CALL	Z,add32
+	CP	'-'
+	CALL	Z,sub32
+	;copy time for calculation's
+	LD	HL,T_DCPM
+	LD	DE,T_DCC1
+	LD	BC,4
+	PUSH	HL
+	PUSH	BC
+	LDIR
+	POP	BC
+	POP	HL
+	LD	DE,T_DCC2
+	LDIR
+	RET
+GETDTM:	;convert local CP/M time seconds to binary date and time 1
+	;year: sub (S_DAY*365/366) / 1978+
+	LD	HL,S_DAY
+	LD	DE,$$NUM
+	LD	BC,4
+	LDIR			;copy S_DAY
+	LD	HL,0
+	LD	($NUM),HL
+	LD	HL,06D01H
+	LD	($NUM+2),HL	;365 NOrder
+	LD	HL,1978-1
+C_YEAR:	INC	HL
+	CALL	LPYEAR
+	ADD	A,06DH
+	LD	($NUM+3),A	;LOW(365/366)
+	PUSH	HL
+	LD	BC,$$NUM	;*S_DAY
+	LD	DE,$NUM
+	LD	HL,$RES
+	CALL	mul32		;= year-seconds
+	LD	BC,T_DCC1
+	LD	DE,$RES
+	LD	HL,T_DCC1
+	CALL	sub32		;time - year-seconds
+	POP	HL
+	JR	NC,C_YEAR
+	LD	(T_YEAR),HL	;save year
+	PUSH	HL
+	LD	BC,T_DCC1
+	LD	DE,$RES
+	LD	HL,T_DCC1
+	CALL	add32		;correct underflow
+	;month: sub (S_DAY*28/29/30/31) / 1+
+	POP	HL		;year
+	LD	A,1-1		;month
+	LD	($NUM+2),A	;clear
+C_MONT:	INC	A
+	LD	C,A
+	CALL	MXDMON
+	LD	($NUM+3),A	;28/29/30/31
+	PUSH	HL
+	PUSH	BC
+	LD	BC,$$NUM	;*S_DAY
+	LD	DE,$NUM
+	LD	HL,$RES
+	CALL	mul32		;= month-seconds
+	LD	BC,T_DCC1
+	LD	DE,$RES
+	LD	HL,T_DCC1
+	CALL	sub32		;time - month-seconds
+	POP	BC
+	POP	HL
+	LD	A,C
+	JR	NC,C_MONT
+	LD	(T_MONT),A	;save month
+	LD	BC,T_DCC1
+	LD	DE,$RES
+	LD	HL,T_DCC1
+	CALL	add32		;correct underflow
+	;day: sub (S_DAY) / 1+
+	LD	A,1-1		;day
+C_DAY:	INC	A
+	LD	BC,T_DCC1
+	LD	DE,$$NUM	;S_DAY
+	LD	HL,T_DCC1
+	CALL	sub32		;time - day-seconds
+	JR	NC,C_DAY
+	LD	(T_DAY),A	;save day
+	LD	BC,T_DCC1
+	LD	DE,$$NUM
+	LD	HL,T_DCC1
+	CALL	add32		;correct underflow
+	;hour: sub 3600s / 0+
+	LD	HL,0100EH
+	LD	($NUM+2),HL	;3600 NOrder
+	LD	A,0-1		;hour
+C_HOUR:	INC	A
+	LD	BC,T_DCC1
+	LD	DE,$NUM		;3600
+	LD	HL,T_DCC1
+	CALL	sub32		;time - hour-seconds
+	JR	NC,C_HOUR
+	LD	(T_HOUR),A	;save hour
+	LD	BC,T_DCC1
+	LD	DE,$NUM
+	LD	HL,T_DCC1
+	CALL	add32		;correct underflow
+	;minute: sub 60s / 0+	
+	LD	A,(HL)
+	DEC	HL
+	LD	H,(HL)
+	LD	L,A		;load rest
+	LD	DE,60
+	XOR	A		;CY=0
+	DEC	A		;minute-1
+C_MIN:	INC	A
+	SBC	HL,DE		;time - minute-seconds
+	JR	NC,C_MIN
+	LD	(T_MIN),A	;save minute
+	ADD	HL,DE		;correct underflow
+	;second: rest
+	LD	A,L
+	LD	(T_SEC),A	;save second (rest)
+	;convert local CP/M time seconds to binary date and time 2
+	;16 Bit day's: sub (S_DAY) / 1+
+	LD	HL,1-1		;day's
+C_DAYS:	INC	HL
+	PUSH	HL
+	LD	BC,T_DCC2
+	LD	DE,$$NUM	;S_DAY
+	LD	HL,T_DCC2
+	CALL	sub32		;time - day-seconds
+	POP	HL
+	JR	NC,C_DAYS
+	LD	(TPDAYS),HL	;save day's
+	LD	HL,T_HOUR
+	LD	DE,TPHOUR
+	LD	BC,3
+	LDIR			;copy binary h/m/s
+	RET
+GETBCD:	;convert binary date and time to BCD
+	CALL	GTBCD1
+	;copy to BIN/BCD 2
+	LD	HL,(TPDAYS)
+	LD	(PDTBIN),HL	;copy BIN day's
+	LD	HL,TIMBCD
+	LD	DE,PTMBCD
+	LD	BC,3
+	LDIR			;copy BCD hh/mm/ss
+	RET
+GTBCD1:	;convert to BCD 1
+	LD	HL,(T_YEAR)
+	LD	DE,TEMP
+	CALL	MHL5DC##
+	LD	HL,DATBCD
+	CALL	MKLBCI		;YY ...
+	LD	A,(T_MONT)
+	CALL	MKLBCD		;MM
+	LD	A,(T_DAY)
+	CALL	MKLBCD		;DD
+	LD	A,(T_HOUR)
+	CALL	MKLBCD		;hh
+	LD	A,(T_MIN)
+	CALL	MKLBCD		;mm
+	LD	A,(T_SEC)	;... ss
+MKLBCD:	LD	DE,TEMP
+	CALL	MA3DC##
+MKLBCI:	DEC	DE
+	DEC	DE
+	LD	A,(DE)		;penultimate digit
+	SUB	'0'
+	RLCA
+	RLCA
+	RLCA
+	RLCA
+	LD	C,A
+	INC	DE
+	LD	A,(DE)		;last digit
+	SUB	'0'
+	OR	C
+	LD	(HL),A		;packed BCD number
+	INC	HL		;next
+	RET
+	
+;### Network SUB-programs ##############################
+	;load PTR to Server name
+	;PE:   -
+	;PA:   HL - PTR to server name
+	;    CY=1 - no (more) PTR found	
+GTSPTR:	LD	HL,NTSTAT
+	BIT	3,(HL)
+	LD	C,0		;offset
+	JR	Z,GTSPTL	;random off
+	LD	A,R
+	AND	6
+	LD	C,A		;random offset (even)
+GTSPTL:	LD	B,4		;max.
+	JR	GTSPTI
+GTSPTW:	LD	A,C
+	INC	A
+	INC	A
+	AND	7
+	LD	C,A		;next PTR entry offset
+GTSPTI:	LD	A,B
+	LD	B,0
+	LD	HL,SV_CMD	;PTR table
+	ADD	HL,BC		;+offset=PTR entry
+	LD	B,A
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)		;DE=PTR
+	LD	A,E
+	OR	D
+	JR	NZ,GTSPTG	;PTR found
+	DJNZ	GTSPTW		;try next PTR entry
+	SCF			;ERR
+	RET
+GTSPTG:	LD	(HL),0
+	DEC	HL
+	LD	(HL),0		;clear entry
+	EX	DE,HL		;HL=PTR to ZString
+	RET
+	;copy domain ZString (HL) -> (DE)
+COPYNM:	LD	B,255		;max. length
+	PUSH	AF
+	XOR	A
+COPYNR:	PUSH	BC
+	LDI			;copy
+	POP	BC
+	CP	(HL)
+	JR	Z,COPYNE	;destination string end
+	DJNZ	COPYNR
+COPYNE:	LD	(DE),A		;write 0-Byte
+	INC	DE		;EA+1
+	POP	AF
+	RET
+	;- resolve host ZString (domain name or IP-string)
+	;- copy valid IP address to T_PEER
+	;PE:   HL - address of server ZString
+	;PA: CY=1 - ERR
+DNSSEU:	DB	CLLN,' DNS Error "unknown Host" !',BEEP,'$'
+DNSQSE:	DB	CLLN,' DNS Server Error '
+DNSQSN:	DB	'   ',BEEP,'$'
+DNSQCE:	DB	CLLN,' DNS Client Error '
+DNSQCN:	DB	'   ',BEEP,'$'
+	;
+MKHOST:	LD	(T_SNAM),HL	;save address for Out
+	LD	A,(HL)
+	CP	'0'
+	JR	C,MKHOS1	;<0 no Digit
+	CP	'9'+1
+	JR	NC,MKHOS1	;>9 no Digit
+	;try to convert num. IP from digit(s)
+	EX	DE,HL
+	LD	HL,T_PEER
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	RET	NC		;if successful -> OK
+	EX	DE,HL
+MKHOS1:	;copy name to (DMNBUF)
+	LD	DE,(T_NBUF)	;PTR to DMN buffer
+	PUSH	DE
+	CALL	COPYNM
+	;resolve name
+	POP	DE
+	LD	HL,(T_MBUF)	;PTR to MSG buffer
+	CALL	GHBNAM		;query:(DE)Name->(DE)IP
+	EX	DE,HL		;HL: numerical IP
+	JR	NC,MKHOS4	;OK: copy IP
+	;A=ERR# from resolver
+	LD	DE,DNSSEU	;'unknown host'
+	LD	(TXPMSG),DE	;load MSG PTR
+	CP	3
+	JR	Z,MKHOS3
+	LD	HL,DNSQSE	;'Server'
+	LD	DE,DNSQSN
+	CP	16
+	JR	C,MKHOS2
+	LD	HL,DNSQCE	;'Client'
+	LD	DE,DNSQCN
+MKHOS2:	LD	(TXPMSG),HL	;load MSG PTR
+	CALL	MAFDC##		;write ERR-number
+MKHOS3:	LD	HL,NTSTAT
+	SET	7,(HL)
+	SCF
+	RET
+MKHOS4:	LD	DE,T_PEER
+	LD	BC,4
+	LDIR			;copy num. IP to HOSTIP
+	OR	A		;OK
+	RET
+	;get Time from NTP-Server with T_PEER-address
+	;PE:   -
+	;PA:   HL - NTSTAT
+	;    CY=1 - ERR
+GTSKER:	DB	CLLN,'Socket Error !',BEEP,'$'
+GTOSER:	DB	CLLN,'Open Socket Error !',BEEP,'$'
+GTSAER:	DB	CLLN,'Send ARP Error !',BEEP,'$'
+GTTOER:	DB	CLLN,'Server request: Timeout Error !',BEEP,'$'
+GTTSER:	DB	CLLN,'Server reply: Originate Timestamp Error !',BEEP,'$'
+GTLIER:	DB	CLLN,'Server reply: Leap Indicator alarm condition Error !',BEEP,'$'
+GTVNER:	DB	CLLN,'Server reply: Version Number Error !',BEEP,'$'
+GTRMER:	DB	CLLN,'Server reply: Mode Error !',BEEP,'$'
+GTTDER:	DB	CLLN,'Server reply: Time of Day Error !',BEEP,'$'
+GTKDER:	DB	CLLN,'Server replied with Kiss-o’-Death message (code: '
+GTKCER:	DB	'    )!',BEEP,'$'
+	;
+GETNTP:	LD	HL,NTSTAT
+	SET	1,(HL)		;activate program termination
+	BIT	2,(HL)
+	JR	Z,GTTSOP	;Full off -> skip
+	;show request domain name or IP address
+	LD	DE,TXSRNI
+	CALL	ZKOUT
+	LD	DE,(T_SNAM)
+	CALL	ZKOUT
+	CALL	NEWLN
+GTTSOP:	LD	A,0FFH		;any socket
+	LD	D,SK_DGRAM	;UDP-Mode
+	LD	E,0		;UDP-Flags
+	CALL	SOCKET		;get free Socket
+	LD	HL,GTSKER
+	LD	(TXPMSG),HL	;load MSG PTR
+	JP	C,GTTAKE	;ERR
+	LD	(T_SCK),A
+	CALL	CONNECT		;open Socket with dyn. Client Port
+	LD	HL,GTOSER
+	LD	(TXPMSG),HL	;load MSG PTR
+	JP	C,GTTIER	;Err+close Socket
+	LD	HL,NTSTAT
+	RES	1,(HL)		;deactivate program termination
+	;make query
+	LD	HL,(T_MBUF)
+	LD	(HL),T_VN4 OR 3 ;set VN and query client mode
+	INC	HL		;adr+1
+	LD	BC,T_CBLG-1	;length-1
+	CALL	CLRMEM		;clear MSG buffer
+	LD	HL,T_RSEK+4
+	CALL	MZ4ID		;fill fraction with random pattern
+	LD	HL,(T_MBUF)
+	LD	DE,TRA_TS	;client Transmit Timestamp
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,T_RSEK
+	LD	BC,8
+	LDIR			;-> copy
+	;send query
+	LD	HL,(T_MBUF)	;PTR MSG buffer
+	LD	DE,T_PEER	;Peer Data
+	LD	BC,T_CBLG	;MSG length
+	LD	A,(T_SCK)
+	CALL	SENDTO		;send query
+	LD	HL,GTSAER
+	LD	(TXPMSG),HL	;load MSG PTR
+	JP	C,GTTIER	;Err+close Socket
+	CALL	N_TIME
+	LD	(TEMP),HL	;save SEND TIME
+GTTIMW:	;wait for response
+	CALL	CST##		;CON ?
+	JR	NZ,GTTIMC	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	;check break (ERR is not set!)
+	LD	HL,NTSTAT
+	SET	0,(HL)		;activate termination
+	CP	ETX
+	JP	Z,GTTIER	;HL=NTSTAT !
+	CP	ESC
+	JP	Z,GTTIER	;HL=NTSTAT !
+	RES	0,(HL)		;deactivate
+GTTIMC:	LD	DE,(TEMP)
+	CALL	CALCPT		;get Timediff. in HL
+	LD	DE,5000		;Timeout 5s
+	OR	A
+	SBC	HL,DE
+	CCF
+	LD	HL,GTTOER
+	LD	(TXPMSG),HL	;load MSG PTR
+	JP	C,GTTIER	;Timediff.>=Timeout -> Err+close Socket
+	LD	A,(T_SCK)
+	LD	E,SL_RECV
+	CALL	SELECT
+	JR	C,GTTIMW	;no Data
+	;receive data and check sender
+	LD	HL,(T_MBUF)	;for Data
+	LD	DE,T_PREC	;for Header Data
+	LD	BC,T_CBLG	;max. NTP MSG-Size
+	PUSH	DE
+	CALL	RECVFR
+	POP	DE		;Header Data
+	LD	HL,T_PEER	;Peer Data
+	CALL	CMP6BT		;compare Sent with Received IP+Port
+	JR	NZ,GTTIMW	;faulty sender
+	;check Packet-Length (DE = T_SIZN)
+	LD	HL,T_SIZH
+	CALL	NTOHS		;data packet size to HOrder
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	LD	HL,T_CBLG	;max. Size NTPv4-Message
+	OR	A
+	SBC	HL,DE
+	JR	C,GTTIMW	;data packet size > max.
+	LD	HL,KEYIDN	;min. Size NTPv4-Message
+	EX	DE,HL
+	SBC	HL,DE		;CY=1 -> data packet size < min.
+	JR	C,GTTIMW	;not expected data
+	;parse server reply message
+	LD	HL,GTTSER
+	LD	(TXPMSG),HL	;load MSG PTR
+	LD	HL,(T_MBUF)
+	PUSH	HL
+	LD	DE,ORI_TS
+	ADD	HL,DE
+	LD	DE,T_RSEK
+	CALL	CMP4BT
+	JR	NZ,GTTILE
+	CALL	CMP4BT		;Originate Timestamp = Sent ?
+GTTILE:	POP	HL		;LI/VN/MODE
+	SCF
+	JR	NZ,GTTIER	;<> -> ERR
+	LD	DE,GTLIER
+	LD	(TXPMSG),DE	;load MSG PTR
+	LD	A,T_LI
+	AND	(HL)
+	CP	T_LI		;LI=3 ?
+	SCF
+	JR	Z,GTTIER	;LI alarm condition -> ERR
+	LD	DE,GTVNER
+	LD	(TXPMSG),DE	;load MSG PTR
+	LD	A,T_VN
+	AND	(HL)
+	CP	T_VN4		;VN=4 ?
+	SCF
+	JR	NZ,GTTIER	;version number ERR
+	LD	DE,GTRMER
+	LD	(TXPMSG),DE	;load MSG PTR
+	LD	A,T_MODE
+	AND	(HL)
+	CP	T_SMD		;reply mode=4 ?
+	SCF
+	JR	NZ,GTTIER	;reply mode ERR
+	INC	HL		;STRATUM
+	LD	DE,GTKDER
+	LD	(TXPMSG),DE	;load MSG PTR
+	LD	A,(HL)
+	OR	A		;Stratum=0 ?
+	JR	NZ,GTTTCP	;no -> copy time
+	;Kiss-o’-Death message
+	LD	HL,(T_MBUF)
+	LD	DE,REFIDN
+	ADD	HL,DE
+	LD	DE,GTKCER
+	LD	B,4
+GTTKCW:	LD	A,(HL)
+	AND	07FH
+	CP	' '
+	JR	NC,GTTKCO
+	LD	A,' '
+GTTKCO:	LD	(DE),A		;copy kiss-code
+	INC	HL
+	INC	DE
+	DJNZ	GTTKCW
+	SCF
+	JR	GTTIER
+GTTTCP:	LD	HL,GTTDER
+	LD	(TXPMSG),HL	;load MSG PTR
+	LD	HL,(T_MBUF)
+	LD	DE,TRA_TS
+	ADD	HL,DE
+	PUSH	HL		;server Transmit Timestamp
+	XOR	A
+	CALL	CPA4BT
+	JR	NZ,GTTINT
+	CALL	CPA4BT
+GTTINT:	POP	HL
+	SCF			;time of day ?
+	JR	Z,GTTIER	;=0 -> ERR
+	;copy "time of day"
+	LD	DE,T_TSEK
+	LD	BC,8
+	LDIR
+	OR	A		;OK
+GTTIER:	PUSH	AF		;save CY
+	LD	A,(T_SCK)
+	CALL	CLOSE		;close Socket
+	POP	AF		;restore CY
+	RET	NC		;OK
+GTTAKE:	LD	HL,NTSTAT
+	SET	7,(HL)		;activate ERR
+	RET
+
+;#######################################################
+;### NTIME START #######################################
+;#######################################################
+	;check for ZSDOS/ZDDOS and CP/M 2+
+BEGIN:	LD	C,CPMVER
+	CALL	BDOS
+	LD	(SYSVER),A	;CP/M version
+	AND	0F0H
+	CP	20H		;version 2+ required
+	LD	DE,CPMERR
+	CALL	C,ZKOUT
+	JP	C,NTQUIT
+	LD	A,(SYSVER)
+	CP	22H
+	JR	NZ,NLDTZD	;not CP/M 2.2
+	LD	C,CPMEXV
+	CALL	BDOS
+	LD	A,H
+	CP	'S'
+	JR	Z,LOADDV	;ZSDOS
+	CP	'D'
+	JR	Z,LOADDV	;ZDDOS
+NLDTZD:	XOR	A		;not ZSDOS/ZDDOS
+LOADDV:	LD	(EXTVER),A	;extended CP/M version
+	LD	SP,STACK
+	;parse and test ARG's
+	;
+	;because Network Hardware-Driver is not initialized
+	; here, do not call hardware-related API functions,
+	;    only functions for CONVERSION are allowed!
+	;
+	XOR	A
+	LD	(NTSTAT),A	;reset state
+	LD	HL,DMA+1
+	LD	DE,ARGMAX	;ARG-Table
+	XOR	A
+	INC	A		;terminate Parameter with 0 
+	CALL	ARGV##		;parse ARG's
+	LD	DE,T_CMXA	;too many ARG's
+	JP	NZ,ETXOUT
+	LD	A,(ARGN)
+	OR	A
+	JP	Z,T_PRSE	;no arg's -> skip parse
+	;init first ARG-pointer
+	LD	HL,TARG1	;address of ARG-PTR tab
+	LD	(TEMP),HL
+	CALL	GETARG		;get first ARG address
+	JR	NTIMC2
+NTIMC1:	CALL	CNTARG		;count & get next ARG
+	JP	Z,T_PRSE	;all arg's parsed
+NTIMC2:	LD	A,(HL)
+	CP	'+'
+	JR	Z,T_ZNOI
+	CP	'-'
+	JP	NZ,T_NTPS	;no option
+	INC	HL
+	LD	A,(HL)
+	CALL	ISDIGIT##
+	JR	Z,T_ZNOF
+	LD	C,(HL)		;option char
+	INC	HL
+	;options
+NTIMC4:	XOR	A
+	OR	C		;string end?
+	JR	Z,NTIMC1	;next ARG
+	EX	DE,HL
+	LD	HL,NTSTAT
+	AND	0DFH		;UCASE
+	CP	'H'		;help
+	JR	NZ,T_OST1
+	SET	0,(HL)
+T_OST1:	CP	'V'		;version
+	JR	NZ,T_OST2
+	SET	1,(HL)
+T_OST2:	CP	'F'		;full
+	JR	NZ,T_OST3
+	SET	2,(HL)
+T_OST3:	CP	'R'		;random
+	JR	NZ,T_OST4
+	SET	3,(HL)
+T_OST4:	CP	'T'		;test
+	JR	NZ,T_OST5
+	SET	4,(HL)		;on
+	PUSH	HL
+	PUSH	DE
+	LD	HL,T_TSEK	;result
+	LD	B,0FFH		;<>dig=end
+	CALL	din32		;(1322238702 max.time)
+	POP	DE
+	POP	HL
+	JP	NC,T_PRSE	;test right away
+	RES	4,(HL)		;off
+T_OST5:	EX	DE,HL
+	LD	C,(HL)		;next char
+	INC	HL
+	JR	NTIMC4		;next option
+T_ZNOF:	;offset value
+	DEC	HL
+	LD	A,(HL)
+T_ZNOI:	LD	C,A
+	INC	HL
+	CALL	ATOI
+	JP	C,T_OFSE
+	LD	HL,13
+	SBC	HL,DE
+	JR	NC,T_ZNST
+	;Daylight Savings time offset (minutes)
+	LD	HL,780		;13 hours max.
+	OR	A
+	SBC	HL,DE
+	JR	C,T_DTOE
+	LD	A,C
+	LD	(T_DSGN),A
+	LD	HL,60
+	CALL	MULHD##
+	EX	DE,HL
+	LD	HL,T_DOFS	
+	JR	T_ZNSL
+T_DTOT:	DB	'invalid value for Daylight Savings time offset !',BEEP,'$'
+T_DTOE:	LD	DE,T_DTOT
+	JP	ETXOUT
+T_ZNST:	;time zone offset (hours)
+	LD	A,C
+	LD	(T_ZSGN),A
+	LD	HL,3600
+	CALL	MULHD##
+	EX	DE,HL
+	LD	HL,T_ZOFS
+T_ZNSL:	LD	(HL),0
+	INC	HL
+	LD	(HL),0
+	INC	HL
+	LD	(HL),D
+	INC	HL
+	LD	(HL),E		;save offset NOrder (seconds)
+	JP	NTIMC1
+T_OFSE:	LD	DE,T_OFST
+	JR	ETXOUT
+T_OFST:	DB	'invalid offset value !',BEEP,'$'
+T_NTPS:	;NTP-server: HL=PTR
+	EX	DE,HL
+	LD	HL,SV_CMD
+	LD	B,4		;max.
+T_NTPW:	LD	A,(HL)
+	INC	HL
+	OR	(HL)
+	INC	HL
+	JR	NZ,T_NTPC	;entry already in use
+	DEC	HL
+	LD	(HL),D
+	DEC	HL
+	LD	(HL),E		;save cmdline PTR
+	LD	HL,NTSTAT
+	SET	5,(HL)		;activate
+	JP	NTIMC1		;next arg
+T_NTPC:	DJNZ	T_NTPW
+	LD	DE,T_NTPT
+ETXOUT:	CALL	ZKOUT
+	JP	T_ENDE
+T_NTPT:	DB	'too much NTP-server values !',BEEP,'$'
+;------ command parsed -> execute ----------------------
+T_PRSE:	LD	HL,NTSTAT	;state
+	BIT	0,(HL)
+	LD	DE,TM_HLP
+	JR	NZ,ETXOUT	;show Help and exit
+	BIT	1,(HL)
+	CALL	NZ,TM_VER	;show Version
+	JP	NZ,T_ENDE	;and exit
+;-------init and test Network --------------------------
+	;try Network init
+	XOR	A		;DRV->KOP (required only for KC85)
+	CALL	N_INIT
+	CALL	C,ZKOUT		;->DE=ERR-string
+	CALL	C,NEWLN
+	LD	DE,TM_VE2
+	JR	C,ETXOUT	;show "-h" and exit
+	;network available
+	CALL	NETTST		;configured?
+	JP	C,T_ENDE
+	CALL	ONTEST		;online?
+	JP	C,T_ENDE
+;------ allocate memory --------------------------------
+	XOR	A		;free TPA
+	CALL	IALLOC##
+	LD	DE,256		;domain name length
+	CALL	ALLOC##
+	LD	DE,T_CMXD	;no TPA
+	JR	Z,ETXOUT
+	LD	(T_NBUF),HL	;set address
+	LD	DE,MAXMTU	;message buffer length
+	CALL	ALLOC##
+	LD	DE,T_CMXD	;no TPA
+	JR	Z,ETXOUT
+	LD	(T_MBUF),HL	;set address
+	LD	HL,NTSTAT
+	BIT	4,(HL)		;test mode?
+	JR	NZ,T_TTST	;active	
+	BIT	5,(HL)		;server from cmdline?
+	JR	NZ,T_MAIN	;active
+;------ copy pre-configured server PTR's ---------------
+	LD	HL,SV_PRC
+	LD	DE,SV_CMD
+	LD	B,4		;max.
+T_PSVW:	PUSH	BC
+	LD	C,(HL)
+	INC	HL
+	LD	B,(HL)		;BC = PTR to entry
+	DEC	HL
+	LD	A,(BC)
+	OR	A
+	JR	Z,T_PSVS	;skip null entry
+	LDI
+	LDI			;copy PTR
+	JR	T_PSVC
+T_PSVS:	INC	HL
+	INC	HL
+T_PSVC:	POP	BC
+	DJNZ	T_PSVW
+;------ Main Loop --------------------------------------
+T_MAIN:	CALL	GTSPTR		;load first PTR
+	LD	DE,T_CMXE
+	JP	C,ETXOUT	;ERR -> msg and end
+T_MRES:	;resolve IP-address from ZString
+	CALL	MKHOST
+	JR	NC,T_SVQU	;IP OK -> query
+T_MSGM:	;ERR resolve or query
+	CALL	GTSPTR		;load next PTR
+	JP	C,T_EMSG	;ERR -> msg and end
+	PUSH	HL
+	LD	DE,(TXPMSG)
+	CALL	ZKOUT		;ERR message Out
+	CALL	NEWLN
+	LD	HL,NTSTAT
+	RES	7,(HL)		;reset ERR
+	POP	HL
+	JR	T_MRES		;try next server
+T_SVQU:	;query NTP-Server
+	CALL	GETNTP
+	BIT	0,(HL)
+	JP	NZ,T_ENDE	;-> terminated by user
+	BIT	1,(HL)		;terminated by program?
+	JP	NZ,T_EMSG	;-> msg and end
+	JR	C,T_MSGM	;ERR -> msg and next entry
+;-------------------------------------------------------
+T_TTST:	;convert NTP-UTC seconds to local CP/M time seconds
+	CALL	GETLOC
+	;convert local CP/M time seconds to binary date and time
+	CALL	GETDTM
+	;convert binary date and time to BCD
+	CALL	GETBCD
+	LD	HL,NTSTAT
+	BIT	4,(HL)
+	JP	NZ,T_SHTM	;test mode active	
+;####### set various CP/M clocks (CTC/RTC) #############
+SETCLK:	;-----------------------------------------------
+	;   binary time 1 : T_YEAR ... T_SEC
+	;      BCD time 1 : DATBCD ... TIMBCD
+	;
+	;   binary time 2 : TPDAYS ... TPSEC
+	;  BIN/BCD time 2 : PDTBIN ... PTMBCD
+	;-----------------------------------------------
+	LD	A,(SYSVER)	;CP/M-Version
+STCLK1:	CP	22H
+	JR	NZ,STCLK2
+	;CP/M 2.2
+	LD	A,(EXTVER)	;extended CP/M-Version
+	OR	A
+	JR	Z,T_SHOW	;unsupported system
+	;ZSDOS/ZDDOS system clock
+	LD	DE,DATBCD	;BCD date and time
+	LD	C,99		;ZxDOS set Time
+	CALL	BDOS
+	DEC	A
+	JR	Z,STCLOK	;OK
+	JR	STCLER		;Error occured
+STCLK2:	AND	0F0H
+	CP	30H
+	JR	C,T_SHOW	;unsupported system
+	;CP/M 3+ system clock
+	LD	DE,PDTBIN	;time stamp
+	LD	C,104		;CP/M Plus set date and time
+	CALL	BDOS		;always OK
+	;activate Messages
+STCLOK:	LD	DE,TXCLOK	;set clock OK
+	JR	STCLKE
+STCLER:	LD	DE,TXCLER	;set clock ERR
+STCLKE:	LD	(TXPMSG),DE
+	LD	HL,NTSTAT
+	SET	7,(HL)		;activate message
+;#######################################################
+T_SHOW:	;show info, date and time
+	LD	HL,NTSTAT
+	BIT	2,(HL)
+	JP	Z,T_SHOT	;Full off -> skip
+	;show NTP-Server information
+	;server domain name or IP address
+	LD	DE,TXSANI
+	CALL	ZKOUT
+	LD	HL,T_PEER
+	PUSH	HL
+	LD	DE,(T_NBUF)
+	PUSH	DE
+	LD	BC,4
+	LDIR			;copy IP address
+	LD	HL,(T_MBUF)
+	LD	DE,T_CBLG
+	ADD	HL,DE		;behind NTP server message
+	POP	DE		;domain name buffer
+	CALL	GHBADR		;iquery IP address
+	CALL	NC,ZKOUT	; OK: domain name Out
+	POP	HL
+	CALL	C,IPOUT		;ERR: IP address Out
+	;stratum and reference information
+	LD	HL,(T_MBUF)
+	LD	DE,STRATUM
+	ADD	HL,DE
+	LD	A,(HL)
+	CP	1
+	JR	NZ,T_SHSC
+	;primary reference
+	LD	DE,TXSPSI
+	CALL	ZKOUT
+	LD	HL,(T_MBUF)
+	LD	DE,REFIDN
+	ADD	HL,DE
+	LD	B,4
+T_SHPW:	LD	A,(HL)
+	AND	07FH
+	CP	' '
+	JR	NC,T_SHPO
+	LD	A,' '
+T_SHPO:	CALL	COUT##
+	INC	HL
+	DJNZ	T_SHPW
+	JR	T_SHCN
+T_SHSC:	CP	16
+	JR	NC,T_SHTM	;skip this info
+	;secondary reference
+	LD	DE,TXSSI1
+	CALL	ZKOUT
+	CALL	PAFDC##
+	LD	DE,TXSSI2
+	CALL	ZKOUT
+	LD	HL,(T_MBUF)
+	LD	DE,REFIDN
+	ADD	HL,DE
+	PUSH	HL
+	LD	DE,(T_NBUF)
+	PUSH	DE
+	LD	BC,4
+	LDIR			;copy Ref. source IP address
+	LD	HL,(T_MBUF)
+	LD	DE,T_CBLG
+	ADD	HL,DE		;behind NTP server message
+	POP	DE		;domain name buffer
+	CALL	GHBADR		;iquery IP address
+	CALL	NC,ZKOUT	; OK: domain name Out
+	POP	HL
+	CALL	C,IPOUT		;ERR: IP address Out
+T_SHCN:	;show last synchronization
+	;Time-Diff = Transmit Timestamp - Reference Timestamp
+	LD	HL,(T_MBUF)
+	PUSH	HL
+	LD	DE,TRA_TS
+	ADD	HL,DE
+	LD	B,H
+	LD	C,L
+	POP	HL
+	LD	DE,REF_TS
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,$RES
+	CALL	sub32
+	LD	DE,TXSSY1
+	CALL	ZKOUT
+	LD	HL,$RES
+	CALL	A32OUT
+	LD	DE,TXSSY2
+	CALL	ZKOUT
+T_SHTM:	;show calculated values
+	;converted seconds
+	LD	DE,TXUTC1
+	CALL	ZKOUT
+	LD	HL,T_TSEK	;NTP-UTC
+	CALL	A32OUT
+	LD	DE,TXUTC2
+	CALL	ZKOUT
+	LD	HL,T_UCPM	;CP/M-UTC
+	CALL	A32OUT
+	LD	DE,TXUTC3
+	CALL	ZKOUT
+	LD	HL,T_DCPM	;Daylight Savings time of time zone
+	CALL	A32OUT
+T_SHOT:	;date & time
+	;used:	* CCP.MAC (c) ML-Soft 09.02.1997 *
+	LD	DE,TXTIME
+	CALL	ZKOUT
+	LD	HL,DATBCD+2	;date backward
+	LD	B,2
+PTIM1:	LD	A,(HL)		;day/month
+	DEC	HL
+	CALL	AHEX		;show BCD
+	LD	A,'.'
+	CALL	COUT##		;delimiter
+	DJNZ	PTIM1
+	LD	A,(HL)		;year
+	PUSH	AF
+	CP	78H
+	LD	A,19H		;century
+	ADC	A,0		;1978..2077
+	DAA			;correct BCD
+	CALL	AHEX		;show BCD
+	POP	AF
+	CALL	AHEX		;show BCD
+	LD	A,' '
+	CALL	COUT##		;delimiter
+	LD	HL,TIMBCD	;time forward
+	LD	B,2
+PTIM2:	LD	A,(HL)		;hour/minute
+	INC	HL
+	CALL	AHEX		;show BCD
+	LD	A,':'
+	CALL	COUT##		;delimiter
+	DJNZ	PTIM2
+	LD	A,(HL)		;second
+	CALL	AHEX		;show BCD
+	LD	HL,NTSTAT
+	BIT	4,(HL)
+	JR	NZ,T_ENDE	;test mode active
+T_EMSG:	LD	HL,NTSTAT
+	BIT	7,(HL)
+	LD	DE,(TXPMSG)	;PTR
+	CALL	NZ,ZKOUT	;message Out
+T_ENDE:	;NTIME Quit
+	CALL	NEWLN		;always NEWLN
+NTQUIT:	LD	C,WBOOT		;go to CP/M
+	CALL	BDOS		;don't JUMP (gives an
+				;Error with Z-System)
+;****** local Stack ************************************
+	DS	64,0		;depth = 32
+STACK	EQU	$
+;*******************************************************
+EEMAIN	EQU	$		;last ADR main program
+;****** Code-End ***************************************
+
+IF2        
+	.PRINTX "NTIMExx.COM"
+	.RADIX  16
+        PRMSG   <KCN-INC LENGTH:>,%(AAMAIN-103H)
+        PRMSG   <    MAIN BEGIN:>,%AAMAIN
+        PRMSG   <   MAIN LENGTH:>,%(EEMAIN-AAMAIN)
+        PRMSG   <  LAST ADDRESS:>,%EEMAIN
+        PRMSG   <PROGRAM LENGTH:>,%(EEMAIN-100H)
+	.RADIX  10
+ENDIF
+	.DEPHASE
+	END
+	
+;------------------------------------------------------------------
+;	Daylight Savings time MEST (currently not implemented)
+;------------------------------------------------------------------
+;
+; During MEST there is an additional time offset of +60 min. Since
+; 1996 is the following regular:
+;
+;		MEST				changeover
+;	
+; Start:	last sunday in march		2:00 MET
+; End:		last sunday in october		3:00 MEST
+;
+; Today UTC time refers to the internationally accepted civil
+; calendar - the Gregorian calendar. From the Gregorian Date can be
+; calculated the "Julian Day". With the help of this "Julian Day"
+; it is (easy) possible, to detect, if MET or MEST is in effect.
+;
+; Calculation of "Julian Day":
+;
+; - with 32 Bit fixpoint arithmetic
+; - 24 Bit for the day / 8 Bit for the rest of day
+; - this corresponds to an accuracy of about +/-14 minutes
+; - fractional bits:
+;	0,5 0,25 0,125 0,0625 0,03125 0,015625 0,0078125 0,00390625
+;
+; if month > 2 then Y = year / M = month
+;
+; else Y = year-1 / M = month+12
+;
+;	D = day 
+;
+;	H = hour/24 + minute/1440 + (second/86.400)
+;
+;	A = Int(Y/100)
+;	B = 2 - A + Int(A/4)
+;
+;	JD =   Int(365,25*(Y+4716))
+;	     + Int(30,6001*(M+1))
+;	     + D + H + B - 1524,5
+;
+; ... to be continued
+;
+;---------------------------------------------------
+;	Leap year table from 1900-2200
+;---------------------------------------------------
+;	1904	1908	1912	1916	1920	1924
+;1928	1932	1936	1940	1944	1948	1952
+;1956	1960	1964	1968	1972	1976	1980
+;1984	1988	1992	1996
+;
+;2000	2004	2008	2012	2016	2020	2024
+;2028	2032	2036	2040	2044	2048	2052
+;2056	2060	2064	2068	2072	2076	2080
+;2084	2088	2092	2096
+;
+;	2104	2108	2112	2116	2120	2124
+;2128	2132	2136	2140	2144	2148	2152
+;2156	2160	2164	2168	2172	2176	2180
+;2184	2188	2192	2196
+;---------------------------------------------------

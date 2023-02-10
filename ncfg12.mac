@@ -1,0 +1,2186 @@
+;*******************************************************
+;
+;	"KCNet" Network Configuration CP/M 2+
+;
+;		###     KCNET     ###
+;		 WIZnet TCP/IP-Stack 
+;		###  susowa 2008  ###
+;
+;  Name		: NCFGxx.MAC
+;  Date		: 20.11.2008
+;  Modified	: 25.02.2012
+;		: 21.11.2022 d_kef
+;  Hardware	: Net4CPC - W5100S
+;
+;  extern       : SYSLIB.REL
+;
+;  Includes:
+;     KCNET.INC - Configuration
+;   N4C-W51.INC - Interface driver Net4CPC W5100S
+;  W5100-12.INC - TCP/IP and Socket driver
+;   DNSC-10.INC - DNS client
+;
+;*******************************************************
+
+;*** NCFG-VERSION **************************************
+V_MAJOR	EQU	1
+V_MINOR	EQU	2
+;*** MACROS ********************************************
+NO	EQU	0
+YES	EQU	NOT NO
+	;
+PRMSG   MACRO   MSG,N       
+	.PRINTX *MSG,N*
+	ENDM
+;*** common Equations **********************************
+	;destination
+        .PHASE  00100H
+	;CPU
+	.Z80
+	;CP/M 2+ constants
+BDOS	EQU	5
+DMA     EQU	80H
+	;BDOS
+CPMVER	EQU	12		;get CP/M-Version
+;*******************************************************
+
+;*** Start of Code *************************************
+	;start address
+	JP	BEGIN
+	;ZCPR
+	DB	'Z3ENV'
+	DB	1		;type 1
+Z3EPTR:	DW	0		;pointer
+	;"KCNet" files
+	INCLUDE	KCNET.INC	;config file
+;
+	CKMAC	EQU	YES
+	INCLUDE	N4C-W51.INC	;Net4CPC - W5100S routines
+;
+	INCLUDE	W5100-12.INC	;TCP/IP+Socket-Driver
+;
+	INCLUDE	DNSC-11.INC	;DNS-Client
+;
+	;first address main
+AAMAIN	EQU	$
+;*******************************************************
+
+;### DHCP PROTOCOL DEFINITIONS #########################
+	;Message OP Code
+DO_REQUEST	EQU	1
+DO_REPLY	EQU	2
+	;States
+D_DISCOVER	EQU	1
+D_REQUEST	EQU	2
+D_LEASED	EQU	3
+D_REREQUEST	EQU	4		;not used
+D_RELEASE	EQU	5		;not used
+	;Message Types
+DM_NOMSG	EQU	0
+DM_DISCOVER	EQU	1
+DM_OFFER	EQU	2
+DM_REQUEST	EQU	3
+DM_DECLINE	EQU	4
+DM_ACK		EQU	5
+DM_NAK		EQU	6
+DM_RELEASE	EQU	7		;not used
+DM_INFORM	EQU	8		;not used
+	;Timing
+D_RETRY_MAX	EQU	6		;Retry's max.
+D_TIME_MAX	EQU	1000		;first Timeout 1s
+	;Hardware-Types
+D_10MBHTY	EQU	1
+D_100MBHTY	EQU	2
+D_HLENETH	EQU	6
+	;Magic Cookie
+D_MGC1		EQU	99
+D_MGC2		EQU	130
+D_MGC3		EQU	83
+D_MGC4		EQU	99
+	;DHCP Message Structure
+RIP_MSGA	EQU	LINEBF		;memory destination
+OPCODE		EQU	RIP_MSGA
+HTYPE		EQU	OPCODE+1
+HLEN		EQU	HTYPE+1
+HOPS		EQU	HLEN+1
+XID		EQU	HOPS+1
+SECS		EQU	XID+4
+FLAGS		EQU	SECS+2
+CIADDR		EQU	FLAGS+2
+YIADDR		EQU	CIADDR+4
+SIADDR		EQU	YIADDR+4
+GIADDR		EQU	SIADDR+4
+CHADDR		EQU	GIADDR+4
+SNAME		EQU	CHADDR+16
+FILE		EQU	SNAME+64
+OPT		EQU	FILE+128
+RIP_MSGE	EQU	OPT+312
+	;defined DHCP OPTIONS and VALUES (RFC1533)
+PADOPTION		EQU	0
+SUBNETMASK		EQU	1
+timerOffset		EQU	2
+ROUTERSONSUBNET		EQU	3
+TIMESERVER		EQU	4
+nameServer		EQU	5
+DNS			EQU	6
+logServer		EQU	7
+cookieServer		EQU	8
+lprServer		EQU	9
+impressServer		EQU	10
+resourceLocationServer	EQU	11
+HOSTNAME		EQU	12
+bootFileSize		EQU	13
+meritDumpFile		EQU	14
+DOMAINNAME		EQU	15
+swapServer		EQU	16
+rootPath		EQU	17
+extentionsPath		EQU	18
+IPforwarding		EQU	19
+nonLocalSourceRouting	EQU	20
+policyFilter		EQU	21
+maxDgramReasmSize	EQU	22
+defaultIPTTL		EQU	23
+pathMTUagingTimeout	EQU	24
+pathMTUplateauTable	EQU	25
+ifMTU			EQU	26
+allSubnetsLocal		EQU	27
+broadcastAddr		EQU	28
+performMaskDiscovery	EQU	29
+maskSupplier		EQU	30
+performRouterDiscovery	EQU	31
+routerSolicitationAddr	EQU	32
+staticRoute		EQU	33
+trailerEncapsulation	EQU	34
+arpCacheTimeout		EQU	35
+ethernetEncapsulation	EQU	36
+tcpDefaultTTL		EQU	37
+tcpKeepaliveInterval	EQU	38
+tcpKeepaliveGarbage	EQU	39
+nisDomainName		EQU	40
+nisServers		EQU	41
+ntpServers		EQU	42
+vendorSpecificInfo	EQU	43
+NETBIOSNAMESERVER	EQU	44
+NETBIOSDGRAMDISTSERVER	EQU	45
+NETBIOSNODETYPE		EQU	46
+netbiosscope		EQU	47
+xFontServer		EQU	48
+xDisplayManager		EQU	49
+DHCPREQUESTEDIPADDR	EQU	50
+dhcpIPaddrLeaseTime	EQU	51
+dhcpOptionOverload	EQU	52
+DHCPMESSAGETYPE		EQU	53
+DHCPSERVERIDENTIFIER	EQU	54
+DHCPPARAMREQUEST	EQU	55
+dhcpMsg			EQU	56
+dhcpMaxMsgSize		EQU	57
+DHCPT1VALUE		EQU	58
+DHCPT2VALUE		EQU	59
+dhcpClassIdentifier	EQU	60
+dhcpClientIdentifier	EQU	61
+ENDOPTION		EQU	255
+;#######################################################
+
+;*** Work RAM ******************************************
+BSSTAM:	DB	0		;screen state (KC85)
+NETDAT:	DB	0,0,0,0		;current IP
+	DB	0,0,0,0		;current MASK
+DSTATE:	DB	0		;DHCP-State
+DMTYPE:	DB	0		;DHCP-Message-Type
+D_CSCK:	DB	0		;Socket Handle
+D_CPRT:	DB	0,68		;local Port NOrder
+BCDATA:	DB	255,255,255,255	;Broadcast IP-address
+BCPORT:	DB	0,67		;DHCP-Server Port NOrder
+D_TMO:	DW	D_TIME_MAX	;Timeout ms
+D_STIM:	DW	0		;DHCP-MSG Timestamp Send
+DCOUNT:	DB	0		;DHCP-Retry Counter
+HCNRTR:	DW	0		;RTR in HOrder (*100us)
+KCNRTR:	DB	07H,0D0H 	;RTR in NOrder (*100us)
+KCNRCR:	DB	8		;RCN
+C_TEMP:	DB	0,0,0,0		;Temp for ARG-PTR, N_L/WIPA
+	;NCFG-State
+CFSTAT:	DB	0	;Bit=1:
+			; 7 - Reset TCPIP-Stack ON
+			; 6 - Auto Configuration ON
+			; 5 - Network configured
+			; 4 - Show IP Config ON 
+			; 3 - Full Output ON
+			; 2 - Quiet Output ON
+			; 1 - Show Version ON
+			; 0 - Show Help ON
+	;LOCAL ARG-Network settings
+CFNAME:	DS	16,0		;config name
+SRCIP:	DB	0,0,0,0		;IP-Address
+SRCMSK:	DB	0,0,0,0		;Subnetmask
+SRCGTW:	DB	0,0,0,0		;Gateway
+SRCMAC:	DB	0,0,0,0,0,0	;MAC
+LOCDNS:	DB	0,0,0,0		;local DNS
+HNMBUF:	DS	16,0		;Buffer Hostname+0
+HNAMEL:	DB	0		;length Hostname+0
+ARGNSL	EQU	$-CFNAME	;length settings
+	;Buffer for I_ADDR/I_NTOA
+I_ATMP:	DS	4,0	;temp. I_ADDR
+I_NTMP:	DS	16,0	;temp. I_NTOA
+	;control buffer for NCFG.INI
+NCFGDU:	DW	0		;NCFG.INI DU: (low=U)
+	;
+NCFCTL:	DB	NCFREC		;used # of records
+	DS	7,0		;filled in by FYIO
+NCFBUF:	DW	0000H		;working file buffer
+NCFFCB:	DB	0		;filled in by FYIO to 0
+	DB	'NCFG    '	;file Name
+	DB	'INI'		;file Type
+	DS	24,0		;filled in by FYIO
+	;
+NCFREC	EQU	8		;declare # of records (128 byte)
+	;Table for ARGV## - addresses
+ARGMAX:	DB	10	;max. 10 Arguments
+ARGN:	DB	0	;Number of Arguments found
+PARG1:	DW	0	;ADR ARG1
+PARG2:	DW	0	;ADR ARG2
+PARG3:	DW	0	;ADR ARG3
+PARG4:	DW	0	;ADR ARG4
+PARG5:	DW	0	;ADR ARG5
+PARG6:	DW	0	;ADR ARG6
+PARG7:	DW	0	;ADR ARG7
+PARG8:	DW	0	;ADR ARG8
+PARG9:	DW	0	;ADR ARG9
+PARG10:	DW	0	;ADR ARG10
+;
+SYSVER:	DB	0		;CP/M-Version
+;
+	;SYS-Error
+CPMERR:	DB	CR,'CP/M-Version 2+ required !',BEEP,CR,LF,'$'
+	;NCFG Messages
+C_CMXA:	DB	'Too many arguments (help with -h)!',BEEP,'$'
+C_CMXB:	DB	'More TPA required !',BEEP,'$'
+C_CMXC:	DB	'NCFG.INI not found (show help with -h) !',BEEP,'$'
+C_CMXD:	DB	'Open NCFG.INI and search for ','$'
+C_CMXE:	DB	'Configuration name ','$'
+C_CMXF:	DB	' not found in NCFG.INI !',BEEP,CR,LF,'$'
+C_CMXG:	DB	'Write IP-ADDRESS and SUBNET-MASK.',CR,LF,'$'
+C_CMXH:	DB	'Write GATEWAY.',CR,LF,'$'
+C_CMXI:	DB	'Write GATEWAY to DNS-Server.',CR,LF,'$'
+C_CMXJ:	DB	'Write DNS-Server.',CR,LF,'$'
+C_CMXK:	DB	'Perform APIPA configuration ... (>ESC<-BRK)',CR,LF,'$'
+C_CMXL:	DB	'.',CR,LF,'$'
+C_CMXM:	DB	'Test local IP ... ','$'
+C_CMXN:	DB	'Clear local settings.',CR,LF,'$'
+C_CMXO:	DB	'Network already configured!',CR,LF,'$'
+C_CMXP:	DB	' ### KCNet IP Configuration ###','$'
+C_CMXQ:	DB	'Reset Network successful.',CR,LF,'$'
+C_CMXR:	DB	'Reset Network failed!',BEEP,'$'
+	;
+	;NCFG-Usage
+C_CHLP:	DB	'ncfg [[DIR|DU:]config name] [-h|v] [-rfq] [-a:hostname]',CR,LF
+	DB	' [-i:ip-address -m:subnet-mask] [-g:gateway] [-d:DNS-server]',CR,LF
+	DB	LF
+	DB	'config name    - config name defined in [DIR|DU:]NCFG.INI',CR,LF
+	DB	'-h|v           - show help or version and exit',CR,LF
+	DB	'-r             - reset network configuration',CR,LF
+	DB	'-f             - full output',CR,LF
+	DB	'-q             - quiet output',CR,LF
+	DB	'-a:hostname    - auto configuration with DHCP or APIPA',CR,LF
+	DB	'-i:ip-address  - ip-address manually dec. (d.d.d.d)',CR,LF
+	DB	'-m:subnet-mask - subnet-mask manually dec. (d.d.d.d)',CR,LF
+	DB	'-g:gateway     - network gateway manually dec. (d.d.d.d)',CR,LF
+	DB	'-d:DNS-server  - DNS-server manually dec. (d.d.d.d)'
+	DB	'$'
+	;
+	;NCFG-Version
+CFGHT1:	DB	'###  Network Configuration CP/M 2+  ###',CR,LF
+	DB	'              Version ',V_MAJOR+'0','.',V_MINOR+'0',CR,LF
+	DB	'          "KCNet TCP/IP-Stack"',CR,LF
+	DB	'### copyright 2008-2011 by >susowa< ###',CR,LF
+	DB	LF,'$'
+CFGHT2:	DB	CR,LF
+	DB	'          Show Help with -h','$'
+	;
+;*** DHCP-Client Messages ******************************
+D_CMXA:	DB	'Perform DHCP configuration ... (>ESC<-BRK)',CR,LF,'$'
+D_CMXC:	DB	'Send DHCP-DISCOVER ... ','$'
+D_CMXD:	DB	'Received DHCP-OFFER.',CR,LF,'$'
+D_CMXE:	DB	'Send DHCP-REQUEST ... ','$'
+D_CMXF:	DB	'Received DHCP-ACK.',CR,LF,'$'
+D_CMXG:	DB	'Received DHCP-NACK.',CR,LF,'$'
+D_CMXH:	DB	'Send DHCP-DECLINE ... ','$'
+D_CMXI:	DB	'Send DHCP-RELEASE ... ','$'
+D_CMXK:	DB	'DHCP client timeout error!',BEEP,CR,LF,'$'
+D_CMXL:	DB	'IP conflict!',BEEP,CR,LF,'$'
+D_CMXM:	DB	'Test leased IP ... ','$'
+D_CMXN:	DB	'OK.',CR,LF,'$'
+D_CMXO:	DB	'Timeout error!',BEEP,CR,LF,'$'
+D_CMXP:	DB	'Socket error!',BEEP,'$'
+	;Work-RAM DHCP-Communication
+		;Outflags for received options
+FLGOTB:	DB	0		;request successful
+FDNS:	DB	0		;DNS-Server OK
+FTIME:	DB	0		;TIME-Server OK
+FDNNAM:	DB	0		;Domain-Name OK
+FNETBS:	DB	0		;NETBIOS-NameServer/DG-Server/nodeType OK
+FRNTIM:	DB	0		;lease Time OK
+FRBTIM:	DB	0		;renew Time OK
+		;Receiver
+DSRVIP:	DB	0,0,0,0		;IP-address RECEIVE FROM
+DSRVPT:	DB	0,0		;Port RECEIVE FROM
+DSRVDS:	DB	0,0		;DATA SIZE RECEIVE FROM NOrder
+HSRVDS:	DB	0,0		;DATA SIZE RECEIVE FROM HOrder
+		;IP's and Option Data
+REALIP:	DB	0,0,0,0		;real dhcp-server-ip from reply message (RECVFR)
+DHCPIP:	DB	0,0,0,0		;dhcp-server-ip from dhcpServerIdentifier (OPT)
+YIADR:	DB	0,0,0,0		;ip address received from DHCP-Server (YIADDR)
+DGMASK:	DB	0,0,0,0		;Subnet mask received from DHCP-Server
+DGGWIP:	DB	0,0,0,0		;1. GATEWAY ip-address received from DHCP-Server
+DDNSIP:	DB	0,0,0,0		;1. DNS-Server ip-address received from DHCP-Server
+DTIMIP:	DB	0,0,0,0		;1. TIME-Server ip-address received from DHCP-Server
+DNBNIP:	DB	0,0,0,0		;1. netBIOSnameServer ip-address received from DHCP-Server
+DNBDGS:	DB	0,0,0,0		;1. netBIOSdiagrammServer ip-address received from DHCP-Server
+DNBNTP:	DB	0		;netBIOSnodeType received from DHCP-Server
+RNTIME:	DB	0,0,0,0		;RENEW Time received from DHCP-Server
+RBTIME:	DB	0,0,0,0		;REBIND Time received from DHCP-Server
+HTIME:	DB	0,0,0,0		;Time HOrder
+DWRAML	EQU	$-FLGOTB	;DHCP Work RAM length
+	;DHCP requested Data Out
+DOTX1:	DB	' DHCP-SERVER: ','$'
+DOTX2:	DB	CR,LF
+	DB	'    LOCAL IP: ','$'
+DOTX3:	DB	CR,LF
+	DB	'     NETMASK: ','$'
+DOTX4:	DB	CR,LF
+	DB	'     GATEWAY: ','$'
+DOTX5:	DB	CR,LF
+	DB	'  DNS-SERVER: ','$'
+DOTX6:	DB	CR,LF
+	DB	' TIME-SERVER: ','$'
+DOTX7:	DB	CR,LF
+	DB	'      DOMAIN: ','$'
+DOTX8:	DB	CR,LF
+	DB	'     NETBIOS: ','$'
+DOTX9:	DB	CR,LF
+	DB	'  RENEW TIME: ','$'
+DOTXA:	DB	CR,LF
+	DB	' REBIND TIME: ','$'
+DNBNS:	DB	' (NBNS)  ','$'
+DNBDD:	DB	' (NBDD)  ','$'
+DNODE:	DB	' (NODE)','$'
+	;
+	;### CONSTANTS DHCP-Client ###
+	;---------------------------------------
+	;MESSAGE-HEADER (copy source)
+DH_MSGA:
+	DB	DO_REQUEST	;OPCODE
+	DB	D_10MBHTY	;HTYPE
+	DB	D_HLENETH	;HLEN
+	DB	0		;HOPS
+HXID:	DB	0,0,0,0		;XID
+	DB	0,0		;SECS
+	DB	80H,00H		;Broadcast-FLAGS
+DH_MSGL	EQU	$-DH_MSGA	;Header length
+	;---------------------------------------
+	;first part DHCP-OPTIONS (copy source)
+DO_MSG1:
+	DB	D_MGC1,D_MGC2,D_MGC3,D_MGC4	;Magic Cookie
+	;
+	DB	DHCPMESSAGETYPE,1
+DO_MTP:	DB	0
+	;
+	DB	DHCPCLIENTIDENTIFIER,7
+	DB	1
+DO_MAC:	DS	3,0
+DO_MNM:	DS	3,0
+DO_MLG1	EQU	$-DO_MSG1			;length 1. part
+	;---------------------------------------
+	;second part DHCP-OPTIONS
+	;(Hostname User-System for possibly DNS-
+	;   registration through DHCP-Server)
+	;
+	;1 Byte HOSTNAME-OPTION-CODE
+	;1 Byte HOSTNAME-OPTION-LENGTH (length of x-Bytes: Name+0)
+	;x-Bytes ASCII-HOSTNAME + Zerobyte
+	;
+	;DO_2MLG - have to be calculated!	;length 2. part
+	;---------------------------------------
+	;third part DHCP-OPTIONS  (copy source)
+DO_MSG3:
+	DB	DHCPPARAMREQUEST,PARAML
+PARAM:	DB	SUBNETMASK
+	DB	ROUTERSONSUBNET
+	DB	DNS
+	DB	DOMAINNAME
+	DB	TIMESERVER
+	DB	NETBIOSNAMESERVER
+	DB	NETBIOSDGRAMDISTSERVER
+	DB	NETBIOSNODETYPE
+	DB	DHCPT1VALUE
+	DB	DHCPT2VALUE
+PARAML	EQU	$-PARAM
+DO_MLG3	EQU	$-DO_MSG3			;length 3. part
+	;
+;#######################################################
+;### common SUB-programs ###############################
+;#######################################################
+	;clear RAM
+CLRMEM:	LD	(HL),0
+	LD	D,H
+	LD	E,L
+	INC	DE
+	DEC	BC
+	LDIR
+	RET
+	;CR+LF Out
+NEWLN:	PUSH	AF
+	LD	A,CR
+	CALL	COUT##
+	LD	A,LF
+	CALL	COUT##
+	POP	AF
+	RET
+	;(DE)-string + 0/'$' Out
+ZKOUT:	PUSH	AF
+ZKOU1:	LD	A,(DE)
+	INC	DE
+	AND	A
+	JR	Z,ZKOU2
+	CP	'$'
+	JR	Z,ZKOU2
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	ZKOU1
+ZKOU2:	POP	AF
+	RET
+	;(HL) IP-Address to CON Out
+IPOUT:	PUSH	AF
+	PUSH	DE
+	LD	DE,I_NTMP
+	CALL	I_NTOA		;convert
+	CALL	ZKOUT		;Out
+	LD	DE,4
+	ADD	HL,DE
+	POP	DE
+	POP	AF
+	RET
+	;(HL) MAC-Address to CON Out
+MACOUT:	PUSH	AF	
+	LD	B,6		; 6*HEX
+	JR	MCOUTI
+MCOUTC:	LD	A,':'
+	CALL	COUT##
+MCOUTI:	LD	A,(HL)
+	CALL	PA2HC##		;A-HEX CON Out
+	INC	HL
+	DJNZ	MCOUTC
+	POP	AF
+	RET
+	;show Version
+CFGVER:	PUSH	AF
+	LD	DE,CFGHT1
+	CALL	ZKOUT
+	LD	DE,N_DLBL	;IF-driver label
+	CALL	ZKOUT
+	LD	DE,CFGHT2
+	CALL	ZKOUT
+	POP	AF
+	RET
+	;(HL) NetTime Out (in s, 32 Bit, NOrder)
+N32OUT:	EX	DE,HL
+	LD	HL,HTIME
+	CALL	NTOHL
+	LD	HL,(HTIME+2)	
+	LD	BC,(HTIME)	
+	LD	DE,3600
+	CALL	DIV32		;HL-h
+	LD	DE,24
+	CALL	SDIV##		;DE-days/HL-hours
+	EX	DE,HL
+	PUSH	DE
+	LD	DE,DAYTX
+	CALL	ZSTRGO
+	POP	HL
+	LD	DE,STDTX
+	CALL	ZSTRGO
+	RET
+DAYTX:	DB	' DAY(S) ','$'
+STDTX:	DB	' HOUR(S) ','$'
+ZSTRGO:	LD	A,H
+	OR	L
+	RET	Z
+	CALL	PHLFDC##	;Value
+	CALL	ZKOUT		;Unit
+	RET
+	;HLBC:DE=HL
+DIV32:  XOR     A
+	EX	AF,AF'
+	LD	A,17
+DIV11:  EX      AF,AF'
+	OR	A
+	SBC	HL,DE
+        SBC     A,0
+	JR	NC,DIV12
+	ADD	HL,DE
+        ADC     A,0
+DIV12:  CCF
+	RL	C
+	RL	B
+	RL	L
+	RL	H
+	RLA
+	EX	AF,AF'
+	DEC	A
+	JR	NZ,DIV11
+	LD	H,B
+	LD	L,C
+	RET
+	;ARG parser
+	;PI:      HL - address of ARG (string+0)
+	;PO:    CY=0 - ARG OK
+	;    CY=1/DE - ARG ERR/address of ERR message
+ARGPRS:	INC	HL
+	LD	C,(HL)		;save arg char
+	INC	HL
+	LD	A,':'
+	CP	(HL)
+	JR	Z,ARGPR7	;-> arg value
+ARGPR1:	;-arg character('s) only
+	XOR	A
+	OR	C		;arg end? (CY=0!)
+	RET	Z
+	EX	DE,HL
+	LD	HL,CFSTAT
+	AND	0DFH		;ucase
+	CP	'F'		;full
+	JR	NZ,C_OST2
+	SET	3,(HL)
+C_OST2:	CP	'H'		;help
+	JR	NZ,C_OST3
+	SET	0,(HL)
+C_OST3:	CP	'Q'		;quiet
+	JR	NZ,C_OST4
+	SET	2,(HL)
+C_OST4:	CP	'R'		;reset
+	JR	NZ,C_OST5
+	SET	7,(HL)
+C_OST5:	CP	'V'		;version
+	JR	NZ,C_OST6
+	SET	1,(HL)
+C_OST6:	EX	DE,HL
+	LD	C,(HL)		;next char
+	INC	HL
+	JR	ARGPR1
+ARGPR7:	;-arg character with value
+	INC	HL		;address parameter
+	LD	A,C		;load arg char
+	AND	0DFH		;ucase
+	CP	'I'
+	JR	Z,C_SOP1	;ip
+	CP	'M'
+	JR	Z,C_SOP2	;mask
+	CP	'G'
+	JP	Z,C_SOP3	;gateway
+	CP	'D'
+	JP	Z,C_SOP4	;dns
+	CP	'A'
+	JP	Z,C_SOP5	;auto
+	XOR	A		;CY=0
+	RET
+	;ip
+C_SOP1:	EX	DE,HL
+	LD	HL,I_ATMP
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	LD	DE,C_SO1T
+	RET	C
+	LD	DE,SRCIP
+	LD	BC,4
+	LDIR
+	RET
+C_SO1T:	DB	'invalid value for ip-address!','$'
+	;mask
+C_SOP2:	EX	DE,HL
+	LD	HL,I_ATMP
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	LD	DE,C_SO2T
+	RET	C
+	LD	DE,SRCMSK
+	LD	BC,4
+	LDIR
+	RET
+C_SO2T:	DB	'invalid value for subnet mask!','$'
+	;gateway
+C_SOP3:	EX	DE,HL
+	LD	HL,I_ATMP
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	LD	DE,C_SO3T
+	RET	C
+	LD	DE,SRCGTW
+	LD	BC,4
+	LDIR
+	RET
+C_SO3T:	DB	'invalid value for network gateway!','$'
+	;DNS
+C_SOP4:	EX	DE,HL
+	LD	HL,I_ATMP
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	LD	DE,C_SO4T
+	RET	C
+	LD	DE,LOCDNS
+	LD	BC,4
+	LDIR
+	RET
+C_SO4T:	DB	'invalid value for DNS-server!','$'
+	;auto
+C_SOP5:	LD	A,(HL)
+	CP	' '+1
+	LD	DE,C_SO5T
+	RET	C		;first char < ' '+1
+	LD	BC,00F00H	;max. length of Hostname/counter
+	LD	DE,HNMBUF
+	XOR	A
+C_SO5C:	PUSH	BC
+	LDI			;copy
+	POP	BC
+	INC	C
+	CP	(HL)
+	JR	Z,C_SO5D	;string end
+	DJNZ	C_SO5C
+C_SO5D:	LD	(DE),A		;write 0-Byte
+	INC	C		;+delimiter
+	LD	A,C
+	LD	(HNAMEL),A	;length+0
+	LD	HL,CFSTAT
+	SET	6,(HL)		;auto ON
+	OR	A
+	RET
+C_SO5T:	DB	'invalid hostname!','$'
+	;
+	;load new DIR: and inc. PTR
+TSTDIR:	LD	DE,(Z3EPTR)
+	LD	A,D
+	OR	E
+	SCF
+	RET	Z		;no ZCPR
+	PUSH	HL		;save PTR
+	LD	HL,21
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)		;address of first NDIR
+	INC	HL
+	LD	A,(HL)		;counter
+	POP	HL
+	OR	A		;entries ?
+	SCF
+	RET	Z		;no
+	PUSH	HL		;save PTR
+	LD	B,A
+TSTDI1:	LD	A,(DE)		;NDIR
+	OR	A
+	JR	Z,TDUERR	;no more entries
+	PUSH	BC
+	LD	B,A		;Drive
+	DEC	B		;0... for LOGUD## !
+	INC	DE
+	LD	A,(DE)
+	LD	C,A		;User
+	INC	DE
+	PUSH	HL		;DIR
+	PUSH	DE		;NDIR
+	PUSH	BC		;save DU:
+	LD	B,8
+TSTDI2:	LD	A,(DE)
+	CP	' '
+	JR	Z,TSTDI3	;end of NDIR
+	LD	C,A
+	LD	A,(HL)
+	CALL	CAPS##		;ucase
+	CP	C
+	JR	NZ,TSTDI4 	;DIR<>NDIR
+	INC	HL
+	INC	DE
+	DJNZ	TSTDI2
+TSTDI3:	CALL	TDUEND		;end of DIR ?
+TSTDI4:	POP	BC
+	POP	DE
+	JR	NZ,TSTDI5
+	;DIR=NDIR
+	POP	DE		;retain HL = end of DIR !
+	POP	DE		;retain BC = DU !
+	JR	TDUSOK
+TSTDI5:	POP	HL
+	EX	DE,HL
+	LD	BC,16
+	ADD	HL,BC
+	EX	DE,HL		;DE=next NDIR
+	POP	BC
+	DJNZ	TSTDI1
+	JR	TDUERR		;no more entries
+	;load new DU: and inc. PTR
+TSTDRU:	PUSH	HL
+	LD	BC,(NCFGDU)
+	LD	A,(HL)
+	CALL	ISALPHA##
+	JR	Z,TDDRIV	;A-Z
+	CALL	ISDIGIT##
+	JR	Z,TDUSER	;0-9
+TDUERR:	POP	HL		;reset HL !
+	LD	DE,TSTDUT
+	SCF
+	RET
+TDUEND:	LD	A,(HL)
+	OR	A
+	RET	Z
+	CP	':'
+	RET
+TDDRIV:	AND	05FH		;UCASE
+	SUB	'A'		;new Drive
+	CP	'P'-'A'+1
+	JR	NC,TDUERR
+	LD	B,A
+	INC	HL
+	CALL	TDUEND
+	JR	Z,TDUSOK
+	CALL	ISDIGIT##
+	JR	NZ,TDUERR
+TDUSER:	CALL	EVAL10##	;new USER
+	CALL	TDUEND
+	JR	NZ,TDUERR
+	LD	A,E
+	CP	32
+	JR	NC,TDUERR
+	LD	C,A
+	CCF			;CY=0!
+TDUSOK:	POP	DE		;retain HL !
+	LD	(NCFGDU),BC	;load DU:
+	INC	HL		;PTR for 'name'
+	RET
+TSTDUT: DB	'invalid value for DIR|DU: !','$'
+	;parse name-string
+	;PI:     HL - address of config name zstring
+	;PO: CFNAME - valid config name string+0
+	;        OK - CY=0
+	;    if ERR - CY=1 & DE=address err-string & HL=unchanged
+TSTNAM:	PUSH	HL
+	LD	BC,00F00H	;max. length of name/counter
+	LD	DE,CFNAME
+TSTNAC:	LD	A,(HL)
+	AND	07FH		;clear bit 7
+	OR	A		;CY=0
+	JR	Z,TSTNAD	;string end
+	CALL	ISALNUM##
+	JR	Z,TSTNAO	;A-Z/a-z/0-9
+	CP	'-'
+	JR	Z,TSTNAO	;'-'
+	XOR	A		;CY=0
+	LD	C,A		;clear counter
+	JR	TSTNAD
+TSTNAO:	CP	'a'
+	JR	C,TSTNAL
+	AND	5FH		;uppercase 
+TSTNAL:	LD	(DE),A
+	INC	HL
+	INC	DE
+	INC	C
+	DJNZ	TSTNAC
+TSTNAD:	LD	(DE),A		;terminate
+	POP	HL		;restore
+	INC	C
+	DEC	C
+	RET	NZ		;OK
+	;no/invalid char found
+	LD	(HL),A
+	LD	DE,TSTNAT
+	SCF
+	RET
+TSTNAT:	DB	'invalid config name, only "A-Z", "0-9", "-" allowed !','$'
+	;read and apply "config name" settings
+	;PI: CFNAME - config name string+0
+	;PO:     OK - CY=0
+	;    if ERR - CY=1 & DE=address err-string
+CFREAD:	LD	HL,(NCFBUF)
+	LD	A,H
+	OR	L
+	JR	NZ,CFRDNI
+	XOR	A		;free TPA
+	CALL	IALLOC##
+	LD	DE,NCFREC*128	;file buffer
+	CALL	ALLOC##		;allocate
+	LD	DE,C_CMXB	;no TPA
+	SCF
+	RET	Z
+	LD	(NCFBUF),HL
+CFRDNI:	LD	DE,C_CMXD	;Open / search for
+	CALL	ZKOUT
+	LD	DE,CFNAME	;arg-name
+	CALL	ZKOUT
+	LD	DE,C_CMXL
+	CALL	ZKOUT
+	PUSH	IY
+	LD	BC,(NCFGDU)
+	CALL	LOGUD##		;login 
+	LD	DE,NCFCTL
+	CALL	FYI$OPEN##	;open NCFG.INI
+	LD	DE,C_CMXC	;NCFG.INI not found
+	POP	IY
+	SCF
+	RET	Z
+	LD	DE,NCFCTL	;NCFG.INI
+NEXTLN:	CALL	TSTLNE
+	JP	C,CFRENN	;EOF
+	JR	Z,NEXTLN	;EOL
+	AND	7FH
+	CP	' '+1
+	JR	C,SKIPLN	;CTRL/SPC
+	CP	';'
+	JR	Z,SKIPLN
+	CP	'['
+	JR	Z,FNDACC	;key start found
+SKIPLN:	CALL	SKIPEN
+	JP	C,CFRENN	;EOF
+	JR	NEXTLN
+FNDACC:	LD	BC,00FH		;max. length of config name
+	LD	HL,CFNAME	;config name
+FNDACN:	CALL	TSTLNE
+	JP	C,CFRENN	;EOF
+	JR	Z,NEXTLN	;EOL
+	AND	7FH
+	CALL	ISALPHA##	;A-Z or a-z?
+	JR	NZ,FNDACL	;no
+	AND	5FH		;uppercase
+FNDACL:	CP	']'
+	JR	Z,TSTACC	;key stop found
+	CPI
+	JR	NZ,SKIPLN	;invalid key name
+	JP	PE,FNDACN	;next char
+	JR	SKIPLN		;invalid key name
+TSTACC:	XOR	A
+	CPI
+	JR	NZ,SKIPLN	;invalid key name
+RDACSK:	CALL	SKIPEN		;skip rest of line!
+	JR	C,CFREFN	;EOF
+READAC:	CALL	TSTLNE
+	JR	C,CFREFN	;EOF
+	JR	Z,READAC	;EOL only!
+	AND	7FH
+	CP	' '+1
+	JR	C,RDACSK	;CTRL/SPC
+	CP	';'
+	JR	Z,RDACSK
+	CP	'['
+	JR	Z,CFREFN	;next key found
+	PUSH	IY
+	CALL	FY$UNGET##	;return last char
+	POP	IY
+	;read in and parse one line
+	LD	BC,MAXMTU-1
+	LD	HL,LINEBF
+	LD	(HL),0		;clear line buffer!
+PFOACN:	CALL	TSTLNE
+	JR	C,TSTPLC	;EOF: test current line!
+	JR	Z,TSTPRM	;EOL
+	AND	7FH
+	LD	(HL),A
+	INC	HL
+	LD	(HL),0		;terminate line buffer!
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,PFOACN
+	CALL	SKIPEN		;skip rest of line (CY=EOF!)
+	JR	NC,TSTPRM
+TSTPLC:	PUSH	IY
+	CALL	FY$UNGET##	;return last char
+	POP	IY
+TSTPRM:	LD	HL,LINEBF
+	LD	A,'-'
+	CP	(HL)
+	JR	NZ,READAC	;next line
+	CALL	ARGPRS		;parse "-"arg+0
+	JR	C,CFRECL	;ERR->DE=message
+	LD	DE,NCFCTL	;NCFG.INI
+	JR	READAC		;next line
+CFRENN:	LD	DE,C_CMXE	;config name
+	CALL	ZKOUT
+	LD	DE,CFNAME	;"arg-name"
+	CALL	ZKOUT
+	LD	DE,C_CMXF	;not found in NCFG.INI
+	CALL	ZKOUT
+CFREFN:	OR	A		;config name found
+CFRECL:	PUSH	AF
+	PUSH	DE
+	PUSH	IY
+	LD	DE,NCFCTL
+	CALL	FYI$CLOSE##	;close NCFG.INI
+	POP	IY
+	POP	DE
+	POP	AF
+	RET
+	;skip rest of line
+SKIPEN:	CALL	TSTLNE
+	RET	C		;EOF
+	JR	NZ,SKIPEN	;search EOL
+	RET			;EOL
+	;test EOL: CY=1-EOF / Z=1-EOL
+TSTLNE:	PUSH	IY
+	CALL	FY$GET##	;next byte in A
+	POP	IY
+	SCF
+	RET	Z		;EOF
+	CP	CR
+	JR	NZ,SKIPNE
+	PUSH	IY
+	CALL	FY$GET##
+	POP	IY
+	SCF
+	RET	Z		;EOF
+	CP	LF
+	RET	Z		;Z=1: EOL WIN/CPM
+	PUSH	IY
+	CALL	FY$UNGET##
+	POP	IY
+	XOR	A		;Z=1: EOL MAC
+	RET
+SKIPNE:	CP	LF
+	SCF
+	CCF
+	RET			;Z=1: EOL UNIX
+	;make 4 Random-Bytes to (HL)
+MZ4ID:	LD	A,R
+	LD	(HL),A
+	INC	HL
+	ADC	A,080H
+MZ4IDW:	DEC	A
+	JR	NZ,MZ4IDW
+	LD	A,R
+	LD	(HL),A
+	INC	HL
+	ADD	A,080H
+	LD	(HL),A
+	INC	HL
+	LD	A,R
+	LD	(HL),A
+	RET
+	;compare (DE)-(HL) 2/4/6 Byte
+CMP2BT:	LD	BC,2
+	JR	CMPBTL
+CMP4BT:	LD	BC,4	
+	JR	CMPBTL
+CMP6BT:	LD	BC,6
+CMPBTL:	LD	A,(DE)
+	INC	DE
+	CPI
+	RET	NZ
+	JP	PE,CMPBTL
+	RET			;Z=1 same
+	;compare A-(HL) 2/4/6 Byte
+CPA2BT:	LD	BC,2
+	JR	CPABTL
+CPA4BT:	LD	BC,4	
+	JR	CPABTL
+CPA6BT:	LD	BC,6
+CPABTL:	CPI
+	RET	NZ
+	JP	PE,CPABTL
+	RET			;Z=1 same
+	;read current Network-Settings and
+	;test it: Z=1 not configured
+GTTNET:	;read all
+	LD	HL,SRCIP
+	CALL	N_GLIP		;IP
+	LD	HL,SRCMSK
+	CALL	N_GLMA		;MASK
+	LD	HL,SRCGTW
+	CALL	N_GGTW		;GATEWAY
+	LD	HL,SRCMAC
+	CALL	N_GLMC		;get MAC 
+TSTNCF:	;test only IP & MASK
+	XOR	A
+	LD	HL,SRCIP
+	CALL	CPA4BT
+	RET	Z		;KCNET-IP=4*000
+	LD	HL,SRCMSK
+	CALL	CPA4BT
+	RET			;KCNET-MASK=4*000
+	;Online-Test with ERR-Message to CON
+	;PO:	CY=1 offline
+ONTEST:	CALL	N_LSTA		;LINK STATE
+	XOR	A
+	OR	E		;OK?
+	LD	DE,NONTXT
+	CALL	Z,ZKOUT
+	SCF
+	RET	Z		;offline
+	CCF
+	RET
+NONTXT:	DB	CR,LF,' network-cable not connected !',BEEP,CR,LF,'$'
+	;calculate Time-Diff. in ms
+	;PI: DE - old Timer
+CALCPT:	CALL	N_TIME		;get Timer NOW
+CALCPU:	OR	A
+	SBC	HL,DE		;NOW-(DE-Time)
+	RET	NC		;OK
+	LD	DE,N_XTIME
+	ADC	HL,DE		;correct Overflow
+	RET
+;#######################################################
+;### DHCP CLIENT #######################################
+;#######################################################
+DHCPC:	;Init
+	LD	HL,FLGOTB
+	LD	BC,DWRAML
+	CALL	CLRMEM		;clear DHCP Work-RAM
+	LD	A,0FFH		;any
+	LD	D,SK_DGRAM	;Mode
+	LD	E,0		;Flags
+	CALL	SOCKET
+	LD	DE,D_CMXP	;'socket-error'
+	CALL	C,ZKOUT
+	JP	C,D_SSE
+	LD	(D_CSCK),A
+	LD	HL,D_CPRT	;local Port
+	CALL	BIND
+	JP	C,D_SCLE	;close
+	CALL	CONNECT
+	JP	C,D_SCLE	;close
+	;prepare DHCP-Client 
+	LD	HL,NETDAT
+	CALL	N_GLIP
+	CALL	N_GLMA		;get current IP/SNM
+	LD	A,D_LEASED	;default state
+	LD	(DSTATE),A
+	LD	HL,HXID		;make Header-XID
+	CALL	MZ4ID
+	LD	DE,D_CMXA	;'HEADER'
+	CALL	ZQUOUT
+	CALL	RTIMEQ		;reset Timing/Packet
+	;ready
+D_LOOP:	CALL	CST##		;CON ?
+	JR	NZ,D_LPS1	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	;check break
+	LD	HL,FLGOTB
+	INC	(HL)		;like DHCP-Request timeout
+	CP	ETX
+	JP	Z,D_SCLE
+	CP	ESC
+	JP	Z,D_SCLE
+	DEC	(HL)		;like not requested
+D_LPS1:	;check DHCP-State
+	LD	A,(DSTATE)
+	CP	D_DISCOVER
+	JR	NZ,D_LPS2
+	LD	A,(DMTYPE)
+	CP	DM_OFFER
+	JP	NZ,D_CSST	;wait for offer
+	LD	DE,D_CMXD	;'received offer'
+	CALL	ZQFOUT
+	CALL	DS_RQU		;send request MSG
+	JP	C,D_SCLE	;close
+	LD	A,D_REQUEST
+	LD	(DSTATE),A	;switch to request
+	CALL	RTIMEQ		;reset
+	JP	D_CSST
+D_LPS2:	CP	D_REQUEST
+	JP	NZ,D_LPS3
+	LD	A,(DMTYPE)
+	CP	DM_ACK
+	JR	NZ,D_LP23	;wait for ACK
+	LD	DE,D_CMXF	;'received ack'
+	CALL	ZQFOUT
+	;check leased IP
+	LD	DE,D_CMXM	;'check leased'
+	CALL	ZQFOUT
+	LD	HL,YIADR	;leased IP ...
+	LD	DE,DSRVIP
+	PUSH	DE
+	LD	BC,4
+	LDIR			;= Peer IP
+	CALL	N_DPRT		;read in NOrder
+	LD	(DSRVPT),HL	;= dynamic Port for Peer
+	LD	HL,D_CMXL	;Data
+	POP	DE
+	LD	BC,11		;Data length
+	LD	A,(D_CSCK)	;Socket
+	CALL	SENDTO
+	LD	DE,D_CMXL	;'ip-conflict'
+	JR	NC,D_LP21
+	LD	DE,D_CMXN	;'OK'
+D_LP21:	CALL	ZQFOUT
+	JR	C,D_LP22	;if SENDTO-ERROR = leased IP is OK!
+	;ERR->
+	CALL	DS_DCL		;send decline MSG
+	JP	C,D_SCLE	;close
+	JR	D_LP24
+D_LP22:	;OK ->
+	LD	HL,YIADR	;set NETWORK		
+	CALL	N_SLIP		;IP
+	CALL	N_SLMA		;MASK
+	CALL	N_SGTW		;GATEWAY
+	LD	HL,NETDAT
+	CALL	N_GLIP
+	CALL	N_GLMA		;new = current Data
+	LD	A,(FDNS)
+	OR	A
+	LD	A,N_DNSIP
+	LD	HL,DGGWIP	;gateway
+	JR	Z,D_LPND	;if no DNS -> GW-IP to N_DNSIP
+	LD	HL,DDNSIP	;dns-server
+D_LPND:	CALL	N_WIPA		;write IP to N_DNSIP
+	LD	A,0FFH
+	LD	(FLGOTB),A	;DHCP-Request successful
+	LD	A,D_LEASED	;switch to leased
+	JR	D_LP25
+D_LP23:	CP	DM_NAK
+	JR	NZ,D_CSST	;wait for NAK
+	LD	DE,D_CMXG	;'received nack'
+	CALL	ZQFOUT
+D_LP24:	LD	A,D_DISCOVER
+D_LP25:	LD	(DSTATE),A	;switch to discover
+	CALL	RTIMEQ		;reset
+	JR	D_CSST
+D_LPS3:	CP	D_LEASED
+	JR	NZ,D_LPS4
+	XOR	A
+	LD	HL,NETDAT
+	CALL	CPA4BT
+	JR	Z,D_LP31	;KCNET-IP=4*000
+	LD	HL,NETDAT+4
+	CALL	CPA4BT
+	JR	Z,D_LP31	;KCNET-MASK=4*000
+	JR	D_SCLE		;goto end with close
+D_LP31:	;start DHCP-Request
+	CALL	DS_DSC		;send discover MSG
+	JR	C,D_SCLE	;close
+	LD	A,D_DISCOVER
+	LD	(DSTATE),A	;switch to discover
+	JR	D_CSST
+D_LPS4:	CP	D_REREQUEST
+	JR	NZ,D_LPS5
+	;REREQUEST not used
+	JR	D_CSST
+D_LPS5:	CP	D_RELEASE
+	JR	NZ,D_CSST
+	;RELEASE not used
+D_CSST:	;check Receiver
+	CALL	DR_MSG
+	;check Timeout
+	LD	DE,(D_STIM)
+	CALL	CALCPT		;get Time-Diff. in ms
+	LD	DE,(D_TMO)
+	OR	A
+	SBC	HL,DE
+	JR	C,D_CSCN	;wait up to Timeout
+	LD	HL,(D_TMO)
+	ADD	HL,HL		;Timeout*2
+	LD	(D_TMO),HL	;= next Timeout
+	LD	HL,DCOUNT
+	INC	(HL)		;retry cycle +1
+	LD	A,(HL)
+	CP	D_RETRY_MAX
+	JR	C,D_CRT0	;< max. -> next retry cycle
+	LD	A,1
+	LD	(FLGOTB),A	;DHCP-Request timeout
+	LD	DE,D_CMXK	;'timeout'
+	CALL	ZQFOUT
+	JR	D_SCLE		;close
+D_CRT0:	LD	A,(DSTATE)
+	CP	D_DISCOVER
+	JR	NZ,D_CRT1
+	CALL	DS_DSC		;resend discover MSG
+	JR	C,D_SCLE	;close
+	JR	D_CRT2
+D_CRT1:	CP	D_REQUEST
+	JR	NZ,D_CSCN
+	CALL	DS_RQU		;resend request MSG
+	JR	C,D_SCLE	;close
+D_CRT2:	CALL	N_TIME
+	LD	(D_STIM),HL	;save TIME Start
+D_CSCN:	;check socket State
+	LD	A,(D_CSCK)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	INC	E
+	DEC	E		;offline ?
+	JP	NZ,D_LOOP	;loop
+	;close & break
+D_SCLE:	LD	A,(D_CSCK)
+	CALL	CLOSE
+D_SSE:	LD	A,(FLGOTB)
+	OR	A
+	RET	Z		;not requested (Network already configured or ERR)
+	DEC	A
+	RET	Z		;timeout or break
+	;requested Data Out
+	LD	HL,CFSTAT
+	BIT	3,(HL)
+	RET	Z		;full OFF
+	LD	DE,DOTX1
+	CALL	ZKOUT
+	LD	HL,DHCPIP
+	CALL	IPOUT
+	LD	DE,DOTX2
+	CALL	ZKOUT
+	LD	HL,YIADR
+	CALL	IPOUT
+	LD	DE,DOTX3
+	CALL	ZKOUT
+	LD	HL,DGMASK
+	CALL	IPOUT
+	LD	DE,DOTX4
+	CALL	ZKOUT
+	LD	HL,DGGWIP
+	CALL	IPOUT
+	LD	A,(FDNS)
+	OR	A
+	JR	Z,DRQO1
+	LD	DE,DOTX5
+	CALL	ZKOUT
+	LD	HL,DDNSIP
+	CALL	IPOUT
+DRQO1:	LD	A,(FTIME)
+	OR	A
+	JR	Z,DRQO2
+	LD	DE,DOTX6
+	CALL	ZKOUT
+	LD	HL,DTIMIP
+	CALL	IPOUT
+DRQO2:	LD	A,(FDNNAM)
+	OR	A
+	JR	Z,DRQO3
+	LD	DE,DOTX7
+	CALL	ZKOUT
+	LD	DE,DMNBUF
+	CALL	ZKOUT
+DRQO3:	LD	A,(FNETBS)
+	OR	A
+	JR	Z,DRQO4
+	LD	DE,DOTX8
+	CALL	ZKOUT
+	BIT	0,A
+	JR	Z,DRQNB1
+	LD	HL,DNBNIP
+	CALL	IPOUT		;NBNS
+	LD	DE,DNBNS
+	CALL	ZKOUT
+DRQNB1:	BIT	1,A
+	JR	Z,DRQNB2
+	LD	HL,DNBDGS
+	CALL	IPOUT		;NBDD
+	LD	DE,DNBDD
+	CALL	ZKOUT
+DRQNB2:	BIT	2,A
+	JR	Z,DRQO4
+	LD	A,(DNBNTP)
+	CALL	PAFDC##		;NODE
+	LD	DE,DNODE
+	CALL	ZKOUT
+DRQO4:	LD	A,(FRNTIM)
+	OR	A
+	JR	Z,DRQO5
+	LD	DE,DOTX9
+	CALL	ZKOUT
+	LD	HL,RNTIME
+	CALL	N32OUT
+DRQO5:	LD	A,(FRBTIM)
+	OR	A
+	JR	Z,DRQO6
+	LD	DE,DOTXA
+	CALL	ZKOUT
+	LD	HL,RBTIME
+	CALL	N32OUT
+DRQO6:	CALL	NEWLN	
+	RET
+;###### sub-programs DHCP-Client #######################
+	;Quit Packet/Reset Timer
+RTIMEQ:	LD	A,DM_NOMSG
+	LD	(DMTYPE),A	;reset Reply Message Type
+	LD	(DCOUNT),A	;reset Retry-Counter
+	CALL	N_TIME
+	LD	(D_STIM),HL	;reset TIME to NOW
+	LD	HL,D_TIME_MAX
+	LD	(D_TMO),HL	;reset Timeout to first value
+	RET
+	;make Send-Message
+MSDMSG:	PUSH	AF
+	;clear Send-Buffer	
+	LD	HL,LINEBF
+	LD	BC,MAXSEG
+	CALL	CLRMEM
+	;copy Header
+	LD	HL,DH_MSGA	;MSG-Header
+	LD	DE,LINEBF	;Send-Buffer
+	LD	BC,DH_MSGL	;Header length
+	LDIR
+	;make OPTIONS 1.Part
+	LD	HL,CHADDR
+	CALL	N_GLMC		;write HMAC
+	POP	AF
+	LD	(DO_MTP),A	;write MSG-Type 
+	LD	HL,DO_MAC
+	CALL	N_GLMC		;write OMAC
+	;copy OPTIONS 1.Part
+	LD	HL,DO_MSG1
+	LD	DE,OPT
+	LD	BC,DO_MLG1
+	LDIR
+	;make OPTIONS 2.Part direct
+	LD	A,HOSTNAME
+	LD	(DE),A		;Option Code
+	INC	DE
+	LD	A,(HNAMEL)
+	LD	(DE),A		;length Name+0
+	INC	DE
+	LD	HL,HNMBUF
+	LD	B,0
+	LD	C,A
+	LDIR			;Hostname+0
+	RET
+	;copy OPTIONS 3.Part
+MSDOP3:	LD	HL,DO_MSG3
+	LD	BC,DO_MLG3
+	LDIR
+	RET
+	;make OPTIONS 4.Part direct: RQIP/SRVID/endOption
+MSDOP4:	LD	A,dhcpRequestedIPaddr
+	LD	(DE),A
+	INC	DE
+	LD	A,4
+	LD	(DE),A
+	INC	DE
+	LD	HL,YIADR
+	LD	BC,4
+	LDIR			;your IP
+	LD	A,dhcpServerIdentifier
+	LD	(DE),A
+	INC	DE
+	LD	A,4
+	LD	(DE),A
+	INC	DE
+	LD	HL,DHCPIP
+	LD	BC,4
+	LDIR			;DHCP-SRV IP
+	;write endOption direct
+MSDOPE:	LD	A,endOption
+	LD	(DE),A
+	RET
+;###### DHCP Client MESSAGES ###########################
+	;Send discover message
+DS_DSC:	LD	HL,REALIP
+	LD	BC,8
+	CALL	CLRMEM		;clear real/DHCP-IP
+	LD	HL,NETDAT
+	PUSH	HL
+	LD	BC,4
+	CALL	CLRMEM		;clear local IP
+	POP	HL
+	CALL	N_SLIP		;and write
+	LD	A,DM_DISCOVER
+	CALL	MSDMSG		;header + 1./2. options part
+	CALL	MSDOP3		;3. options part
+	CALL	MSDOPE		;endOption
+	LD	DE,D_CMXC	;'discover'
+	CALL	ZQFOUT
+	JR	DSDMSG
+	;Send request message
+DS_RQU:	LD	A,DM_REQUEST
+	CALL	MSDMSG		;header + 1./2. options part
+	CALL	MSDOP3		;3. options part	
+	CALL	MSDOP4		;4. options part + endOption
+	LD	DE,D_CMXE	;'request'
+	CALL	ZQFOUT
+	JR	DSDMSG
+	;Send decline message
+DS_DCL:	LD	A,DM_DECLINE
+	CALL	MSDMSG		;header + 1./2. options part
+	CALL	MSDOP4		;4. options part + endOption
+	LD	DE,D_CMXH	;'decline'
+	CALL	ZQFOUT
+DSDMSG:	LD	HL,LINEBF	;Data
+	LD	DE,BCDATA	;Peer Data
+	LD	BC,RIP_MSGE-RIP_MSGA ;DNS Message length
+	LD	A,(D_CSCK)	;Socket
+	CALL	SENDTO
+	LD	DE,D_CMXO	;'timeout'
+	JR	C,DSDMS1
+	LD	DE,D_CMXN	;'OK'
+DSDMS1:	CALL	ZQFOUT
+	RET			;CY=1:ERR
+;###### DHCP Server MESSAGES ###########################
+	;Receive packet and parse
+DR_MSG:	LD	A,(D_CSCK)
+	LD	E,SL_RECV
+	CALL	SELECT
+	RET	C		;no Data
+	LD	B,D
+	LD	C,E
+	LD	HL,LINEBF
+	LD	DE,DSRVIP
+	CALL	RECVFR
+	;parse Packet
+	LD	A,(OPCODE)
+	CP	DO_REPLY
+	RET	NZ		;no REPLY-MSG
+	LD	HL,(DSRVPT)
+	LD	DE,(BCPORT)
+	SBC	HL,DE
+	RET	NZ		;no DHCP-Server-Port
+	LD	HL,DO_MAC
+	LD	DE,CHADDR
+	CALL	CMP6BT
+	RET	NZ		;Packet-MAC<>LocalMAC
+	LD	HL,HXID
+	LD	DE,XID
+	CALL	CMP4BT
+	RET	NZ		;Packet-XID<>expected XID
+	LD	HL,DHCPIP
+	XOR	A
+	CALL	CPA4BT
+	JR	Z,DR_MS1	;DHCP-SRV-IP not yet saved
+	LD	HL,REALIP
+	LD	DE,DSRVIP
+	PUSH	DE
+	CALL	CMP4BT
+	POP	DE
+	RET	NZ		;REALIP<>REC-IP
+	LD	HL,DHCPIP
+	CALL	CMP4BT
+	RET	NZ		;DHCPIP<>REC-IP
+DR_MS1:	LD	HL,YIADDR
+	LD	DE,YIADR
+	LD	BC,4
+	LDIR			;save YOUR-IP
+	LD	HL,HSRVDS
+	LD	DE,DSRVDS
+	CALL	NTOHS
+	LD	HL,(HSRVDS)	;DataSize MSG
+	LD	DE,LINEBF
+	ADD	HL,DE		;last ADR MSG
+	EX	DE,HL
+	;parse OPTIONS
+	PUSH	DE
+	LD	HL,OPT
+	LD	DE,DO_MSG1
+	CALL	CMP4BT
+	POP	DE
+	RET	NZ		;Magic-Cookie wrong
+	PUSH	DE
+DR_MS2:	POP	DE
+	PUSH	HL
+	OR	A
+	SBC	HL,DE
+	POP	HL
+	RET	NC		;MSG parsed
+	PUSH	DE
+	LD	A,(HL)		;Option Code
+	INC	HL
+	LD	B,(HL)		;length Option Area
+	;pad
+	CP	PADOPTION
+	JR	Z,DR_MS2
+	INC	HL		;HL = 1.Parameter!
+	;message-typ
+	CP	DHCPMESSAGETYPE
+	JR	NZ,DR_MS3
+	LD	A,(HL)
+	LD	(DMTYPE),A	;set Message-Type
+	INC	HL
+	JR	DR_MS2
+	;server-ID
+DR_MS3:	CP	DHCPSERVERIDENTIFIER
+	JR	NZ,DR_MS4
+	PUSH	HL
+	PUSH	BC
+	LD	HL,DHCPIP	;DHCP-SRV-IP
+	XOR	A
+	CALL	CPA4BT
+	POP	BC
+	POP	HL
+	JR	Z,CPDHCP	;=0: save DHCP-SRV-IP
+	PUSH	HL
+	PUSH	BC
+	LD	HL,DSRVIP	;real Send IP
+	LD	DE,REALIP	;saved real Send IP
+	CALL	CMP4BT
+	POP	BC
+	POP	HL
+	JR	Z,CPDHCP	;= -> save
+	PUSH	HL
+	PUSH	BC
+	LD	HL,DSRVIP	;real Send IP
+	LD	DE,DHCPIP	;saved DHCP-SRV-IP
+	CALL	CMP4BT
+	POP	BC
+	POP	HL
+	JR	NZ,DRSKIP	;<> -> skip
+CPDHCP:	LD	DE,DHCPIP	;DHCP-SRV-IP
+	LD	BC,4	
+	LDIR			;save
+	PUSH	HL
+	LD	HL,DSRVIP	;real Send IP
+	LD	DE,REALIP
+	LD	BC,4
+	LDIR			;save
+	POP	HL
+	JR	DR_MS2
+	;end-option
+DR_MS4:	CP	ENDOPTION
+	JR	Z,DR_MSE
+	;check REQUEST-OPTION Table
+	EX	DE,HL		;DE-ADR OPT-Parameter
+	LD	HL,OPTABL
+	LD	C,(HL)		;length TAB
+	INC	HL		;1.RQ-OPTION
+DR_MS5:	CP	(HL)
+	INC	HL		;ADR DW-OPT in Table
+	JR	NZ,DR_MS6	;<>next OPT
+	;CALL OPT-Sub
+	LD	A,(HL)
+	INC	HL
+	LD	H,(HL)
+	LD	L,A
+	LD	C,B		;copy LENGTH Option Area for PI
+	CALL	CJPHL
+	JR	DR_MS2		;continue
+DR_MS6:	INC	HL
+	INC	HL
+	DEC	C
+	JR	NZ,DR_MS5	;next OPT
+	;no OPTAB-Option
+	EX	DE,HL
+	;skip unused Options
+DRSKIP:	INC	HL
+	DJNZ	DRSKIP
+	JP	DR_MS2
+CJPHL:	JP	(HL)
+	;ready
+DR_MSE:	POP	DE
+	RET
+;###### DHCP option programs ###########################
+	;REQUEST-OPTION Table
+OPTABL:	DB	(OPTABE-OPTABA)/3 	;length TABLE
+OPTABA:	DB	SUBNETMASK
+	DW	OSUBNETMASK
+	DB	ROUTERSONSUBNET
+	DW	OROUTERSONSUBNET
+	DB	DNS
+	DW	ODNS
+	DB	DOMAINNAME
+	DW	ODOMAINNAME
+	DB	TIMESERVER
+	DW	ODOMAINNAME
+	DB	NETBIOSNAMESERVER
+	DW	ONETBIOSNAMESERVER
+	DB	NETBIOSDGRAMDISTSERVER
+	DW	ONETBIOSDGRAMDISTSERVER
+	DB	NETBIOSNODETYPE
+	DW	ONETBIOSNODETYPE
+	DB	DHCPT1VALUE
+	DW	ODHCPT1VALUE
+	DB	DHCPT2VALUE
+	DW	ODHCPT2VALUE
+OPTABE:	
+	;Request-Parameter Sub-programs
+;PI: DE-ADR OPTION-Parameter
+;     B-Length Option Area
+;     C-Length Option Area (Copy from B)
+;PO: !HL!-ADR after OPT-Parameter
+OSUBNETMASK:
+	LD	HL,DGMASK
+	JR	OCOPY4
+OROUTERSONSUBNET:
+	LD	HL,DGGWIP
+OROUT1:	EX	DE,HL
+	LD	B,4
+OROUT2:	LD	A,(HL)	
+	LD	(DE),A
+	INC	HL
+	INC	DE	
+	DEC	C
+	DJNZ	OROUT2
+	XOR	A
+	OR	C
+	RET	Z		;ready (there is only 1 Parameter)
+	LD	B,A
+OROUT3:	INC	HL
+	DJNZ	OROUT3		;skip follow
+	RET
+ODNS:
+	LD	HL,FDNS
+	LD	(HL),0FFH
+	LD	HL,DDNSIP
+	JR	OROUT1
+ODOMAINNAME:
+	LD	HL,FDNNAM
+	LD	(HL),0FFH
+	EX	DE,HL
+	LD	DE,DMNBUF
+	LD	B,0
+	LDIR
+	LD	A,'$'
+	LD	(DE),A		;string + $
+	RET
+OTIMESERVER:
+	LD	HL,FTIME
+	LD	(HL),0FFH
+	LD	HL,DTIMIP
+	JR	OROUT1
+ONETBIOSNAMESERVER:
+	LD	HL,FNETBS
+	SET	0,(HL)
+	LD	HL,DNBNIP
+	JR	OROUT1
+ONETBIOSDGRAMDISTSERVER:
+	LD	HL,FNETBS
+	SET	1,(HL)
+	LD	HL,DNBDGS
+	JR	OROUT1
+ONETBIOSNODETYPE:
+	LD	HL,FNETBS
+	SET	2,(HL)
+	EX	DE,HL
+	LD	DE,DNBNTP
+	LDI
+	RET
+ODHCPT1VALUE:
+	LD	HL,FRNTIM
+	LD	(HL),0FFH
+	LD	HL,RNTIME
+	JR	OCOPY4
+ODHCPT2VALUE:
+	LD	HL,FRBTIM
+	LD	(HL),0FFH
+	LD	HL,RBTIME
+OCOPY4:	EX	DE,HL
+	LD	B,0
+	LDIR
+	RET
+;#######################################################
+;### APIPA-Configuration ###############################
+;#######################################################
+CAPIPA:	LD	DE,C_CMXK	;'HEADER'
+	CALL	ZQUOUT
+CAPIPR:	;prepare Random APIPA-IP
+	CALL	CST##		;CON ?
+	JR	NZ,CAPIP1	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	CP	ETX
+	RET	Z
+	CP	ESC
+	RET	Z
+CAPIP1:	LD	HL,SRCIP	;make Random-IP
+	PUSH	HL
+	CALL	MZ4ID
+	POP	HL
+	LD	(HL),169	;APIPA Net-Address
+	INC	HL
+	LD	(HL),254
+	INC	HL
+	XOR	A
+	PUSH	HL
+	CALL	CPA2BT
+	POP	HL
+	JR	Z,CAPIPR	;2*000 not valid
+	DEC	A
+	CALL	CPA2BT
+	JR	Z,CAPIPR	;2*255 not valid
+	LD	DE,C_CMXM	;'Test local IP ...'
+	CALL	IPARPT		;ARP-Test
+	JR	NC,CAPIPE	;OK
+	INC	A
+	JR	Z,CAPIPR	;conflict ERR->retry with another IP	
+	RET			;another ERR
+CAPIPE:	LD	HL,SRCIP	;set NETWORK
+	CALL	N_SLIP		;APIPA IP
+	LD	HL,SRCMSK
+	PUSH	HL
+	LD	(HL),255	;APIPA Subnet-Mask
+	INC	HL
+	LD	(HL),255
+	INC	HL
+	LD	(HL),0
+	INC	HL
+	LD	(HL),0
+	POP	HL
+	CALL	N_SLMA		;MASK
+	RET
+;#######################################################
+;### Test IP with ARP-Request in local network #########
+;#######################################################
+	;PI: SRCIP - contains Test-IP
+	;	DE - address 'check-string'
+IPARPT:	LD	(C_TEMP),DE
+	LD	HL,SRCIP
+	LD	DE,DSRVIP
+	LD	BC,4
+	LDIR			;copy test IP
+	;open socket
+	LD	A,0FFH		;any
+	LD	D,SK_DGRAM	;Mode
+	LD	E,0		;Flags
+	CALL	SOCKET
+	JR	NC,IPARP1
+	LD	DE,D_CMXP	;'socket-error'
+	CALL	ZKOUT
+	JR	IPARP2
+IPARP1:	CALL	CONNECT		;with dynamic Port
+	JR	NC,IPARP3
+	;close socket
+	CALL	CLOSE
+IPARP2:	LD	A,0		;ERR Code
+	SCF			;CY=1
+	RET
+IPARP3:	CALL	N_DPRT		;read in NOrder
+	LD	(DSRVPT),HL	;= dynamic Port for PEER
+	LD	DE,(C_TEMP)
+	CALL	ZQFOUT		;'check string' Out
+	LD	HL,D_CMXL	;Dummy-Data
+	LD	DE,DSRVIP	;Test PEER+PORT
+	LD	BC,11		;Data length
+	CALL	SENDTO		;A-Socket!
+	CCF			;ERR->CY=1
+	LD	DE,D_CMXL	;'ip-conflict'
+	JR	C,ARPERR	;SENDTO OK->Test-IP conflicts with another IP
+	LD	DE,D_CMXN	;'OK'
+ARPERR:	CALL	ZQFOUT
+	PUSH	AF		;save CY!
+	CALL	CLOSE
+	POP	AF
+	LD	A,0FFH		;ARP-ERR Code for CY=1
+	RET
+;#######################################################
+;### IP-Config Output ##################################
+;#######################################################
+TEXT1:	DB	CLLN
+	DB	'### KCNet Network-Configuration ###',CR,LF
+	DB	' Ethernet adapter: Net4CPC - W5100S',CR,LF,LF
+	DB	'        Network: ','$'
+TEXT2:	DB	'configured','$'
+TEXT3:	DB	'not configured','$'
+TXDNSN:	DB	CR,LF
+	DB	'       DNS-Name: ','$'
+TEXT4:	DB	CR,LF,LF
+	DB	'    MAC-Address: ','$'
+TEXT5:	DB	CR,LF
+	DB	'     IP-Address: ','$'
+TEXT6:	DB	CR,LF
+	DB	'     Subnetmask: ','$'
+TEXT7:	DB	CR,LF
+	DB	'Network Gateway: ','$'
+TEXT8:	DB	CR,LF
+	DB	'     DNS-Server: ','$'
+TEXT9:	DB	CR,LF
+	DB	' TCP Retry Time: ','$'
+TEXT10:	DB	' (*100us)'
+	DB	CR,LF
+	DB	'TCP Retry Count: ','$'
+TEXT11:	DB	CR,LF
+	DB	'       (show help with -h)','$'
+IPCONF:	;read TCP-Timing
+	LD	HL,N_RTR0	;rd RTR
+	LD	DE,KCNRTR
+	CALL	N_RDBT
+	LD	(DE),A		;HWB
+	INC	HL
+	INC	DE
+	CALL	N_RDBT
+	LD	(DE),A		;NWB
+	LD	HL,HCNRTR
+	DEC	DE
+	CALL	NTOHS		;to HOrder 
+	LD	HL,N_RCNR	;rd RCN
+	CALL	N_RDBT
+	LD	(KCNRCR),A
+	;settings OUT
+	LD	DE,TEXT1
+	CALL	ZKOUT
+	CALL	GTTNET		;read network config
+	LD	DE,TEXT2
+	JR	NZ,IPCNF1
+	LD	DE,TEXT3
+IPCNF1:	CALL	ZKOUT
+	JR	Z,IPCNF2	;lokal-IP=4*000
+	LD	A,N_DNSIP
+	LD	HL,LOCDNS
+	PUSH	HL
+	CALL	N_RIPA		;read DNS-IP
+	POP	HL
+	XOR	A
+	CALL	CPA4BT
+	JR	Z,IPCNF2	;DNS-IP=4*000
+	CALL	ONTEST
+	JR	C,IPCNF2	;offline
+	LD	HL,SRCIP
+	LD	DE,DMNBUF
+	PUSH	DE
+	LD	BC,4
+	LDIR			;copy lokal IP
+	POP	DE
+	LD	HL,LINEBF
+	CALL	GHBADR		;IP-Address iquery
+	JR	NC,IPCNF3	;OK
+IPCNF2:	XOR	A
+	LD	(DMNBUF),A	;clear DNS-Name
+IPCNF3:	LD	HL,DMNBUF
+	XOR	A
+	OR	(HL)
+	JR	Z,IPCNF4	;skip DNS-Name
+	LD	DE,TXDNSN
+	CALL	ZKOUT
+	EX	DE,HL
+	CALL	ZKOUT
+IPCNF4:	LD	DE,TEXT4
+	CALL	ZKOUT
+	LD	HL,SRCMAC
+	CALL	MACOUT
+	LD	DE,TEXT5
+	CALL	ZKOUT
+	LD	HL,SRCIP
+	CALL	IPOUT
+	LD	DE,TEXT6
+	CALL	ZKOUT
+	LD	HL,SRCMSK
+	CALL	IPOUT
+	LD	DE,TEXT7
+	CALL	ZKOUT
+	LD	HL,SRCGTW
+	CALL	IPOUT
+	LD	DE,TEXT8
+	CALL	ZKOUT
+	LD	HL,LOCDNS
+	CALL	IPOUT
+	LD	DE,TEXT9
+	CALL	ZKOUT
+	LD	HL,(HCNRTR)
+	CALL	PHLFDC##	;RTR Out
+	LD	DE,TEXT10
+	CALL	ZKOUT
+	LD	A,(KCNRCR)
+	CALL	PAFDC##		;RCN Out
+	LD	DE,TEXT11
+	CALL	ZKOUT
+	RET
+;#######################################################
+;### conditional String Output: Quiet or Quiet+Full ####
+;#######################################################
+	;tests for quiet: /ZKOUT with -q
+ZQUOUT:	PUSH	AF
+	LD	A,(CFSTAT)
+	BIT	2,A
+	JR	NZ,ZQUOUE	;quiet ON
+	CALL	ZKOUT
+ZQUOUE:	POP	AF
+	RET
+IQUOUT:	PUSH	AF
+	PUSH	DE
+	LD	A,(CFSTAT)
+	BIT	2,A
+	JR	NZ,IQUOUE	;quiet ON
+	LD	DE,I_NTMP
+	CALL	I_NTOA		;convert
+	CALL	ZKOUT		;Out
+IQUOUE:	LD	DE,4
+	ADD	HL,DE
+	POP	DE
+	POP	AF
+	RET
+	;tests for quiet+full: ZKOUT only with -f
+ZQFOUT:	PUSH	AF
+	LD	A,(CFSTAT)
+	BIT	2,A
+	JR	NZ,ZQFOUE	;quiet ON
+	BIT	3,A
+	JR	Z,ZQFOUE	;full OFF
+	CALL	ZKOUT
+ZQFOUE:	POP	AF
+	RET
+;#######################################################
+;### NCFG START ########################################
+;#######################################################
+	;check for CP/M 2+
+BEGIN:	LD	C,CPMVER
+	CALL	BDOS
+	LD	(SYSVER),A	;CP/M version
+	AND	0F0H		;version 2+ required
+	CP	20H
+	LD	DE,CPMERR
+	CALL	C,ZKOUT
+	JP	C,CCQUIT
+	LD	SP,STACK	;set local stack
+	CALL	PUTUD##		;save away DU:
+	CALL	RETUD##
+	LD	(NCFGDU),BC	;get current DU:
+	;parse and test ARG's
+	;
+	;because Network Hardware-Driver is not initialized
+	; here, do not call hardware-related API functions,
+	;    only functions for CONVERSION are allowed!
+	;
+	XOR	A
+	LD	(CFSTAT),A	;NCFG-state
+	LD	(NCFBUF),A
+	LD	(NCFBUF+1),A	;NCFG.INI
+	LD	HL,CFNAME
+	LD	BC,ARGNSL
+	CALL	CLRMEM		;ARG-settings work-RAM
+	LD	HL,DMA+1
+	LD	DE,ARGMAX	;table for ARG##
+	XOR	A
+	INC	A		;terminate ARG's with 0 
+	CALL	ARGV##		;parse ARG's
+	LD	DE,C_CMXA	;too many ARG's
+	JP	NZ,ETXOUT
+	LD	A,(ARGN)
+	OR	A
+	JR	NZ,CINGCN
+	LD	HL,CFSTAT
+	SET	4,(HL)		;no ARG's -> show IP-Config ON
+	JP	C_OEND		;skip parser
+CINGCN:	;init first ARG-pointer
+	LD	HL,PARG1	;address of first ARG-PTR
+	LD	(C_TEMP),HL
+	JR	CINGC3
+CINGC2:	;count parsed ARG's
+	LD	HL,ARGN
+	DEC	(HL)
+	JR	Z,C_OEND	;ARG's parsed
+CINGC3:	;get ARG-pointer
+	LD	HL,(C_TEMP)
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	INC	HL
+	LD	(C_TEMP),HL	;save next ARG-pointer
+	EX	DE,HL		;HL: address ARG
+	LD	A,'-'
+	CP	(HL)
+	JR	NZ,CINGC4
+	;"-" arg
+	CALL	ARGPRS		;parse ARG+0
+	JP	C,ETXOUT	;ERR->DE=message
+	JR	CINGC2		;next ARG
+CINGC4:	;"[DU:]config name" arg
+	PUSH	HL
+	LD	C,0
+CINGC5:	LD	A,(HL)
+	INC	HL
+	AND	07FH
+	CP	':'
+	JR	NZ,CINGC6
+	INC	C		;count ":"
+CINGC6:	OR	A		;string end ?
+	JR	NZ,CINGC5	;no
+	POP	HL
+	DEC	C
+	JR	NZ,CINGC7
+	;try DIR/DU: and inc. PTR
+	CALL	TSTDIR
+	CALL	C,TSTDRU
+	JP	C,ETXOUT	;ERR->DE=message
+CINGC7:	CALL	TSTNAM
+	JP	C,ETXOUT	;ERR->DE=message
+	;config name specified
+	CALL	CFREAD		;read and apply settings
+	JP	C,ETXOUT	;ERR->DE=message
+	JR	CINGC2		;next ARG
+C_OEND:	;options parsed
+	LD	HL,CFSTAT
+	BIT	0,(HL)
+	LD	DE,C_CHLP
+	JP	NZ,ETXOUT	;show Help and exit
+	BIT	1,(HL)
+	CALL	NZ,CFGVER	;show Version
+	JP	NZ,CCENDE	;and exit
+;-------------------------------------------------------
+;	--- Configuration flow ---
+;	0. init network
+;	1. Bit 7=1 -> reset TCPIP-Stack and IP's
+;	2. always  -> set valid LOCAL ARG-Values
+;	3. test valid configuration, if OK
+;		   -> skip Auto Conf. (Bit 6=1)
+;	4. Bit 6=1 -> call DHCP-Client
+;	5. Bit 6=1 and DHCP-Client Timeout/Break
+;		   -> call APIPA
+;	6. Read KCNET-Configuration
+;	7. Bit 6=0 -> Test LOCAL ARG-IP conflict, if
+;		      Error, clear LOCAL settings
+;	8. Show SHORT-Configuration
+;-------------------------------------------------------
+	;try Network init
+	XOR	A		;DRV->KOP (required only for KC85)
+	CALL	N_INIT
+	CALL	C,ZKOUT		;->DE=ERR-string
+	CALL	C,NEWLN
+	LD	DE,CFGHT2
+	JP	C,ETXOUT	;show "-h" and exit
+	;network available
+	LD	HL,CFSTAT
+	BIT	4,(HL)
+	JP	NZ,IPCOUT	;no ARG's->show Network-Config
+	LD	HL,CFSTAT
+	BIT	7,(HL)
+	JR	Z,C_NORE
+	;reset TCPIP-Stack
+	LD	HL,I_ATMP
+	PUSH	HL
+	LD	BC,4
+	CALL	CLRMEM		;clear I_ATMP
+	POP	HL
+	LD	B,8
+C_RDNW:	LD	A,B
+	DEC	A
+	PUSH	HL
+	CALL	N_WIPA		;clear all IP's in KCNET
+	POP	HL
+	DJNZ	C_RDNW
+	CALL	N_SWRS		;Software-Reset
+	JR	Z,C_RDNS
+	LD	DE,C_CMXR	;reset ERR
+	JP	ETXOUT
+C_RDNS:	LD	DE,C_CMXQ	;reset OK
+	CALL	ZQFOUT
+C_NORE:	;make LOCAL config with valid ARG's
+	XOR	A
+	LD	HL,SRCIP
+	CALL	CPA4BT
+	JR	Z,C_WRGW	;ARG-IP empty
+	LD	HL,SRCMSK
+	CALL	CPA4BT
+	JR	Z,C_WRGW	;ARG-MASK empty
+	;write IP and MASK to KCNET
+	LD	DE,C_CMXG
+	CALL	ZQFOUT
+	LD	HL,SRCIP
+	CALL	N_SLIP		;IP
+	CALL	N_SLMA		;MASK
+C_WRGW:	LD	HL,SRCGTW
+	XOR	A
+	CALL	CPA4BT
+	JR	Z,C_WDNS	;ARG-GATEWAY empty
+	;write GATEWAY to KCNET
+	LD	DE,C_CMXH
+	CALL	ZQFOUT
+	LD	HL,SRCGTW
+	CALL	N_SGTW		;GATEWAY
+	;test empty DNS and copy GW
+	LD	A,N_DNSIP
+	LD	HL,I_ATMP
+	PUSH	HL
+	CALL	N_RIPA		;read DNSIP
+	POP	HL
+	XOR	A
+	CALL	CPA4BT
+	JR	NZ,C_WDNS	;N_DNSIP not empty
+	;write GATEWAY-IP as DNSIP to KCNET
+	LD	DE,C_CMXI
+	CALL	ZQFOUT
+	LD	A,N_DNSIP
+	LD	HL,SRCGTW
+	CALL	N_WIPA
+C_WDNS:	LD	HL,LOCDNS
+	XOR	A
+	CALL	CPA4BT
+	JR	Z,C_TAUT	;ARG-DNSIP empty
+	;write DNS-Server IP to KCNET
+	LD	DE,C_CMXJ
+	CALL	ZQFOUT
+	LD	A,N_DNSIP
+	LD	HL,LOCDNS
+	CALL	N_WIPA
+C_TAUT:	LD	HL,CFSTAT
+	BIT	6,(HL)
+	JR	Z,C_RCFG	;auto OFF
+	;make Auto Config with DHCP or APIPA of unconfigured! network
+	CALL	ONTEST
+	JR	C,C_RCFG	;offline
+	CALL	GTTNET		;read and test current settings
+	LD	DE,C_CMXO	;'Network already configured!'
+	CALL	NZ,ZQUOUT	
+	JR	NZ,C_RCFG
+	CALL	DHCPC		;try DHCP-Client
+	CALL	ONTEST
+	JR	C,C_RCFG	;offline
+	LD	A,(FLGOTB)
+	DEC	A		;DHCP timeout or break ...
+	CALL	Z,CAPIPA	;... try APIPA
+C_RCFG:	;read settings
+	LD	A,N_DNSIP
+	LD	HL,I_ATMP
+	CALL	N_RIPA
+	CALL	GTTNET
+	LD	HL,CFSTAT
+	BIT	6,(HL)
+	JR	NZ,STDOUT	;auto ON
+	;if IP or MASK 4*000 -> skip conflict Test
+	CALL	TSTNCF
+	JR	Z,STDOUT	;ARG IP or MASK empty
+	;test ip-conflict with LOCAL-IP
+	LD	DE,C_CMXM	;'Test local IP'
+	CALL	IPARPT		;ARP-Test
+	JR	NC,STDOUT	;OK
+	;ERR -> clear IP and MASK
+	LD	DE,C_CMXN
+	CALL	ZQFOUT
+	LD	HL,SRCIP
+	PUSH	HL
+	LD	BC,8
+	CALL	CLRMEM		;clear local settings
+	POP	HL
+	CALL	N_SLIP		;write back IP
+	CALL	N_SLMA		;write back MASK
+STDOUT:	;SHORT Config Out
+	LD	DE,C_CMXP	;'Network Configuration:'
+	CALL	ZQUOUT	
+	LD	DE,STDIP
+	CALL	ZQUOUT
+	LD	HL,SRCIP
+	CALL	IQUOUT
+	LD	DE,STDMSK
+	CALL	ZQUOUT
+	LD	HL,SRCMSK
+	CALL	IQUOUT
+	LD	DE,STDGTW
+	CALL	ZQUOUT
+	LD	HL,SRCGTW
+	CALL	IQUOUT
+	LD	DE,STDDNS
+	CALL	ZQUOUT
+	LD	HL,I_ATMP
+	CALL	IQUOUT
+	JR	CCENDE
+STDIP:	DB	CR,LF
+	DB	'     IP-Address: ','$'
+STDMSK:	DB	CR,LF
+	DB	'    Subnet-Mask: ','$'
+STDGTW:	DB	CR,LF
+	DB	'Network Gateway: ','$'
+STDDNS:	DB	CR,LF
+	DB	'     DNS-Server: ','$'
+	;Show complete IP-CONFIG
+IPCOUT:	CALL	IPCONF
+	JR	CCENDE
+ETXOUT:	;Error-Message Out
+	CALL	ZKOUT		;always Out
+CCENDE:	CALL	NEWLN
+CCQUIT:	LD	C,0		;go to CP/M
+	CALL	BDOS		;don't JUMP (gives an 
+				;Error with Z-System)
+;*** Buffer for Domain-Name ****************************
+DMNBUF:	DS	255+1,0		;max. length
+;*** Buffer for Packet *********************************
+LINEBF:	DS	MAXMTU,0	;MTU max.
+;*** Stack local ***************************************
+	DS	128,0		;depth = 64
+STACK	EQU	$
+;*******************************************************
+EEMAIN	EQU	$		;last ADR main program
+;*** Code-End ******************************************
+
+IF2        
+	.PRINTX "NCFGxx.COM"
+	.RADIX  16
+        PRMSG   <KCN-INC LENGTH:>,%(AAMAIN-103H)
+        PRMSG   <    MAIN BEGIN:>,%AAMAIN
+        PRMSG   <   MAIN LENGTH:>,%(EEMAIN-AAMAIN)
+        PRMSG   <  LAST ADDRESS:>,%EEMAIN
+        PRMSG   <PROGRAM LENGTH:>,%(EEMAIN-100H)
+	.RADIX  10
+ENDIF
+	.DEPHASE
+	END

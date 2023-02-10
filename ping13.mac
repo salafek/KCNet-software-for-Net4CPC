@@ -1,0 +1,1402 @@
+;*******************************************************
+;
+;	 "KCNet" Ping Client & Server CP/M 2+
+;
+;		###     KCNET     ###
+;		 WIZnet TCP/IP-Stack 
+;		###  susowa 2008  ###
+;
+;  Name		: PINGxx.MAC
+;  Date		: 04.11.2008
+;  Modified	: 21.11.2011
+;		: 21.11.2022 d_kef
+;  Hardware	: Net4CPC - W5100S
+;
+;  extern       : SYSLIB.REL
+;
+;  Includes:
+;     KCNET.INC - Configuration
+;   N4C-W51.INC - Interface driver Net4CPC W5100S
+;  W5100-12.INC - TCP/IP and Socket driver
+;   DNSC-10.INC - DNS client
+;
+;*******************************************************
+
+;*** PING-VERSION **************************************
+V_MAJOR	EQU	1
+V_MINOR	EQU	3
+;*** MACROS ********************************************
+NO	EQU	0
+YES	EQU	NOT NO
+	;
+PRMSG   MACRO   MSG,N       
+	.PRINTX *MSG,N*
+	ENDM
+;*** common Equations **********************************
+	;destination
+        .PHASE  00100H
+	;CPU
+	.Z80
+	;CP/M 2+ constants
+BDOS	EQU	5
+DMA     EQU	80H
+	;BDOS
+CPMVER	EQU	12		;get CP/M-Version
+;*******************************************************
+
+;*** Start of Code *************************************
+	;start address
+	JP	BEGIN
+	;ZCPR
+	DB	'Z3ENV'
+	DB	1		;type 1
+Z3EPTR:	DW	0		;pointer
+	;"KCNet" files
+	INCLUDE	KCNET.INC	;config file
+;
+	CKMAC	EQU	NO
+	INCLUDE	N4C-W51.INC	;Net4CPC - W5100S routines
+;
+	INCLUDE	W5100-12.INC	;TCP/IP+Socket-Driver
+;
+	INCLUDE	DNSC-11.INC	;DNS-Client
+;
+	;first address main
+AAMAIN	EQU	$
+;*******************************************************
+
+;### PING PROTOCOL DEFINITIONS #########################
+	;--- PING MESSAGE TYPES ---
+PECHOREPLY	EQU	0	;Echo Reply
+PDESTUNREACH	EQU	3	;Destination Unreachable
+PSOURCEQUENCH	EQU	4	;Source Quench
+PICMPREDIRECT	EQU	5	;ICMP Redirect
+PECHOREQUEST	EQU	8	;Echo Request
+PRTADVERT	EQU	9	;Router Advertisement Message
+PRTSOLICIT	EQU	10	;Router Solicitation Message
+PTIMEEXCEED	EQU	11	;Time Exceeded (TTL=0)
+PPARAMPROBLEM	EQU	12	;Parameter Problem
+PTSREQUEST	EQU	13	;Timestamp Request
+PTSREPLY	EQU	14	;Timestamp Reply
+PINFREQUEST	EQU	15	;Information Request
+PINFREPLY	EQU	16	;Information Reply
+PAMSKREQUEST	EQU	17	;Address Mask Request
+PAMSKREPLY	EQU	18	;Address Mask Reply
+	;--- PING MESSAGE STRUCTURE ---
+P_MSG	EQU	0		;made in Buffer (LINEBF)
+P_TYPE	EQU	P_MSG		;0 - Ping Reply / 8 - Ping Request
+P_CODE	EQU	P_TYPE+1	;always 0
+P_CHKS	EQU	P_CODE+1	;Checksum
+P_ID	EQU	P_CHKS+2	;Ping-ID
+P_SQNM	EQU	P_ID+2		;Sequence Number
+P_DATA	EQU	P_SQNM+2	;Ping Data Bytes
+		;max. = IP RAW MTU - sizeof(Type+Code+Checksum+ID+SeqNum)
+P_MSGE	EQU	P_DATA+P_MDSZ	;message end
+	;
+P_MHDL	EQU	P_DATA-P_TYPE	;PING Message Headerlength
+	;
+P_MDSZ	EQU	56		;PING Message default DataSize
+;#######################################################
+
+;*** Work RAM ******************************************
+	;COUNTERS for PING-Statistic 
+P_LOGA:	;transmitted
+PSRQCT:	DW	0000H		;Count of sent ping-requests
+	;received
+PRRPCT:	DW	0000H		;Count of received ping-reply's
+PURMCT:	DW	0000H		;Count of PDESTUNREACH MSGs
+PSQUCT:	DW	0000H		;Count of PSOURCEQUENCH MSGs
+PTIECT:	DW	0000H		;Count of PTIMEEXCEED MSGs
+PPMPCT:	DW	0000H		;Count of PPARAMPROBLEM MSGs
+PRUMCT:	DW	0000H		;Count of UNKNOWN MSGs/PEERs
+PCSECT:	DW	0000H		;Count of CHECKSUM ERROR
+PCTRE:	;lost
+PARECT:	DW	0000H		;Count of SEND ARP ERROR
+PTMOCT:	DW	0000H		;Count of TIME OUT ERROR
+P_LOGE:	;
+	;ICMP MSG Types
+P_CMX1:	DB	'DESTINATION UNREACHABLE MESSAGE PACKETS=','$'
+P_CMX2:	DB	'SOURCE QUENCH MESSAGE PACKETS=','$'
+P_CMX3:	DB	'TIME EXCEEDED MESSAGE PACKETS=','$'
+P_CMX4:	DB	'PARAMETER PROBLEM MESSAGE PACKETS=','$'
+	;ERRORS
+P_CMX5:	DB	'UNKNOWN MESSAGES=','$'
+P_CMX6:	DB	'CHECKSUM ERRORS=','$'
+P_CMX7:	DB	'SEND ARP ERRORS=','$'
+P_CMX8:	DB	'TIME OUT ERRORS=','$'
+	;DNS Error's
+DNSQSE:	DB	'DNS SERVER ERROR ','$'
+DNSQCE:	DB	'DNS CLIENT ERROR ','$'
+	;DNS SERVER ERROR 3
+DNSSE3:	DB	'unknown host ','$'
+	;
+BSSTAM:	DB	0		;screen state (KC85)
+PINGSK:	DB	0		;PING CLient Socket-Handle
+PSPEER:	DB	0,0,0,0		;PEER-IP	
+PSHSIZ:	DB	0,0		;Packet-Size Sender HOrder
+PSID:	DB	0,0		;Send-ID NOrder
+PSSQNM:	DB	0,0		;Send SQN HOrder
+PRPEER:	DB	0,0,0,0		;PEER-IP Receiver
+PRNSIZ:	DB	0,0		;Data-Size Receiver NOrder
+PRHSIZ:	DB	0,0		;Data-Size Receiver HOrder
+PHSQNM:	DB	0,0		;Received SQN HOrder
+PHCHKS:	DB	0,0		;Received CHKSUM HOrder
+SNDTIM:	DB	0,0		;N_Time SEND (ms)
+RECTIM:	DB	0,0		;N_Time REC. (ms)
+PRSTTM:	DB	0,0		;Average PING-Time
+P_TEMP:	DB	0,0,0,0		;Temp for ARG-PTR, IP
+	;PING-ARG values
+P_INTV:	DW	1000		;Send interval in ms
+P_TMO:	DB	5		;Timeout in s
+PCOUNT:	DW	4		;Count of Requests
+P_BFSZ:	DW	P_MDSZ		;Send-Data Size
+P_TTL:	DB	128		;Time to live
+P_TOS:	DB	0		;Type of service
+P_PATT:	DS	16,0		;max. 16 patterns
+P_PATN:	DB	0		;number of patterns
+	;current Network settings
+SRCIP:	DB	0,0,0,0		;IP-Address
+SRCMSK:	DB	0,0,0,0		;Subnetmask
+SRCGTW:	DB	0,0,0,0		;Gateway
+SRCMAC:	DB	0,0,0,0,0,0	;MAC
+	;Buffer for I_NTOA/I_ADDR
+I_ATMP:	DS	4,0		;temp. I_ADDR
+I_NTMP:	DS	16,0		;temp. I_NTOA
+	;Pointer for Destination-Name Buffer
+PDMNBF:	DW	0		;max. length 256 Bytes
+	;Pointer for Domain-Name Buffer
+DMNBUF:	DW	0		;max. length 256 Bytes
+	;Pointer for PING-Packets Buffer
+LINEBF:	DW	0		;max. length = MAXMTU
+	;Client-State
+PCSTAT:	DB	0	;Bit=1:
+			; 7 - PING REPLY received
+			; 6 - PING is running
+			; 5 - PING User Pattern
+			; 4 - Numeric ON
+			; 3 - Audible ON
+			; 2 - Quiet Output ON
+			; 1 - Show Version ON
+			; 0 - Show Help ON
+	;Table for ARGV## - addresses
+ARGMAX:	DB	9	;max. 9 Arguments
+ARGN:	DB	0	;Number of Arguments found
+PARG1:	DW	0	;ADR ARG1
+PARG2:	DW	0	;ADR ARG2
+PARG3:	DW	0	;ADR ARG3
+PARG4:	DW	0	;ADR ARG4
+PARG5:	DW	0	;ADR ARG5
+PARG6:	DW	0	;ADR ARG6
+PARG7:	DW	0	;ADR ARG7
+PARG8:	DW	0	;ADR ARG8
+PARG9:	DW	0	;ADR ARG9
+	;Table for ARGV## - values
+ARG1:	DW	0	;Argument 1
+ARG2:	DW	0	;Argument 2
+ARG3:	DW	0	;Argument 3
+ARG4:	DW	0	;Argument 4
+ARG5:	DW	0	;Argument 5
+ARG6:	DW	0	;Argument 6
+ARG7:	DW	0	;Argument 7
+ARG8:	DW	0	;Argument 8
+ARG9:	DW	0	;Argument 9
+;
+SYSVER:	DB	0		;CP/M-Version
+;
+	;SYS-Error
+CPMERR:	DB	'CP/M-Version 2+ required !',BEEP,CR,LF,'$'
+	;PING-State Messages
+P_CMXA:	DB	'Too many arguments (help with -h)!',BEEP,'$'
+P_CMXB:	DB	CR,LF,'PING to ','$'
+P_CMXC:	DB	' with ','$'
+P_CMXD:	DB	' bytes of data.',CR,LF,LF,'$'
+P_CMXE:	DB	'Reply from ','$'
+P_CMXF:	DB	' Bytes=','$'
+P_CMXG:	DB	' SQN=','$'
+P_CMXH:	DB	' Checksum Error ','$'
+P_CMXI:	DB	' Time=','$'
+P_CMXJ:	DB	' ms',CR,LF,'$'
+P_CMXK:	DB	CR,LF,'PING statistic for ','$'
+P_CMXL:	DB	' packets transmitted, ','$'
+P_CMXM:	DB	' received, ','$'
+P_CMXN:	DB	' lost','$'
+P_CMXO:	DB	'Request timed out.',CR,LF,'$'
+P_CMXP:	DB	'Send ARP Error.',CR,LF,'$'
+P_CMXQ:	DB	' unknown message or peer.',CR,LF,'$'
+P_CMXR:	DB	' destination host unreachable.',CR,LF,'$'
+P_CMXS:	DB	' time exceeded (TTL).',CR,LF,'$'
+P_CMXT:	DB	' parameter problem.',CR,LF,'$'
+P_CMXU:	DB	' source quench.',CR,LF,'$'
+P_CMXV:	DB	'destination is not allowed!',BEEP,'$'
+P_CMXW:	DB	'Socket Error','$'
+P_CMXX:	DB	'=','$'
+P_CMXY:	DB	'More TPA required !',BEEP,'$'
+	;PING-Usage
+P_CHLP:	DB	'ping [-h|v] [-anq] [-c:count] [-i:interval] [-p:pattern]',CR,LF
+	DB	'   [-s:packet-size] [-t:ttl] [-u:tos] [-w:timeout] destination',CR,LF
+	DB	'Options:',CR,LF
+	DB	'-h|v          - show help or version and exit',CR,LF
+	DB	'-a            - audible ping',CR,LF
+	DB	'-n            - numeric output without inverse DNS query',CR,LF
+	DB	'-q            - quiet output',CR,LF
+	DB	'-c:count      - stop after sending count echo request packets',CR,LF
+	DB	'-i:interval   - wait interval ms between sending each packet',CR,LF
+	DB	'-p:pattern    - up to 16 bytes(hex) to fill out the packet data',CR,LF
+	DB	'-s:packetsize - specifies the number of data bytes to be sent',CR,LF
+	DB	'-t:ttl        - set the IP Time to Live',CR,LF
+	DB	'-u:tos        - set Quality of Service related bits',CR,LF
+	DB	'-w:timeout    - time to wait for a response in seconds',CR,LF
+	DB	' destination  - Host name or IP address'
+	DB	'$'
+	;PING-Version
+P_CVE1:	DB	'###  PING Client & Server CP/M 2+   ###',CR,LF
+	DB	'             Version ',V_MAJOR+'0','.',V_MINOR+'0',CR,LF
+	DB	'         "KCNet TCP/IP-Stack"',CR,LF
+	DB	'### copyright 2008-2011 by >susowa< ###',CR,LF
+	DB	LF,'$'
+P_CVE2:	DB	CR,LF
+	DB	'           Show Help with -h','$'
+	;
+;### common SUB-programs ###############################
+	;clear RAM
+CLRMEM:	LD	(HL),0
+	LD	D,H
+	LD	E,L
+	INC	DE
+	DEC	BC
+	LDIR
+	RET
+	;CR+LF Out
+NEWLN:	PUSH	AF
+	LD	A,CR
+	CALL	COUT##
+	LD	A,LF
+	CALL	COUT##
+	POP	AF
+	RET
+	;(DE)-string + 0/'$' Out
+ZKOUT:	PUSH	AF
+ZKOU1:	LD	A,(DE)
+	INC	DE
+	AND	A
+	JR	Z,ZKOU2
+	CP	'$'
+	JR	Z,ZKOU2
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	ZKOU1
+ZKOU2:	POP	AF
+	RET
+	;(HL) IP-Address to CON Out
+IPOUT:	PUSH	AF
+	PUSH	DE
+	LD	DE,I_NTMP
+	CALL	I_NTOA		;convert
+	CALL	ZKOUT		;Out
+	LD	DE,4
+	ADD	HL,DE
+	POP	DE
+	POP	AF
+	RET
+	;show Version
+PNGVER:	PUSH	AF
+	LD	DE,P_CVE1
+	CALL	ZKOUT
+	LD	DE,N_DLBL	;IF-driver label
+	CALL	ZKOUT
+	LD	DE,P_CVE2
+	CALL	ZKOUT
+	POP	AF
+	RET
+	;make 4 Random-Bytes to (HL)
+MZ4ID:	LD	A,R
+	LD	(HL),A
+	INC	HL
+	ADC	A,080H
+MZ4IDW:	DEC	A
+	JR	NZ,MZ4IDW
+	LD	A,R
+	LD	(HL),A
+	INC	HL
+	ADD	A,080H
+	LD	(HL),A
+	INC	HL
+	LD	A,R
+	LD	(HL),A
+	RET
+	;compare (DE)-(HL) 2/4 Byte
+CMP2BT:	LD	BC,2
+	JR	CMPBTL
+CMP4BT:	LD	BC,4	
+CMPBTL:	LD	A,(DE)
+	INC	DE
+	CPI
+	RET	NZ
+	JP	PE,CMPBTL
+	RET			;Z=1 same
+	;compare A-(HL) 4 Byte
+CPA4BT:	LD	BC,4	
+CPABTL:	CPI
+	RET	NZ
+	JP	PE,CPABTL
+	RET			;Z=1 same
+	;read current Network-Settings and
+	;test it: Z=1 not configured
+GTTNET:	;read all
+	LD	HL,SRCIP
+	CALL	N_GLIP		;IP
+	LD	HL,SRCMSK
+	CALL	N_GLMA		;MASK
+	LD	HL,SRCGTW
+	CALL	N_GGTW		;GATEWAY
+	LD	HL,SRCMAC
+	CALL	N_GLMC		;get MAC 
+	;test only IP & MASK
+	XOR	A
+	LD	HL,SRCIP
+	CALL	CPA4BT
+	RET	Z		;KCNET-IP=4*000
+	LD	HL,SRCMSK
+	CALL	CPA4BT
+	RET			;KCNET-MASK=4*000
+	;Online-Test with ERR-Message to CON
+	;PO:	CY=1 offline
+ONTEST:	CALL	N_LSTA		;LINK STATE
+	XOR	A
+	OR	E		;OK?
+	LD	DE,NONTXT
+	CALL	Z,ZKOUT
+	SCF
+	RET	Z		;offline
+	CCF
+	RET
+NONTXT:	DB	CR,LF,'Network-cable not connected !',BEEP,CR,LF,'$'
+	;Network-Test with ERR-Message to CON
+	;PO:	CY=1 not configured
+NETTST:	CALL	GTTNET
+	LD	DE,NKNTXT
+	CALL	Z,ZKOUT
+	SCF
+	RET	Z		;not conf.
+	CCF
+	RET
+NKNTXT:	DB	CR,LF,'Network not configured !',BEEP,CR,LF,'$'
+	;calculate Time-Diff. in ms
+	;PI: DE - old Timer
+CALCPT:	CALL	N_TIME		;get Timer NOW
+CALCPU:	OR	A
+	SBC	HL,DE		;NOW-(DE-Time)
+	RET	NC		;OK
+	LD	DE,N_XTIME
+	ADC	HL,DE		;correct Overflow
+	RET
+
+;### special PING SUB-programs #########################
+	;PING SERVICE
+P_PING:	LD	A,(PCSTAT)
+	BIT	6,A
+	RET	Z		;PING is not running
+	LD	DE,(SNDTIM)
+	CALL	CALCPT		;calculate Time-Diff. (HL)
+	BIT	7,A
+	JR	Z,P_PIN2	;no REPLY
+	LD	DE,(P_INTV)
+	SBC	HL,DE
+	RET	C		;wait min. (P_INTV)
+	JR	P_PIN3		;quit & next Request
+P_PIN2:	PUSH	HL
+	LD	DE,(P_TMO)	;s!
+	LD	D,0
+	LD	HL,1000		;ms!
+	CALL	MULHD##		;PO: CY=0!
+	POP	DE
+	SBC	HL,DE
+	RET	NC		;wait for Timeout
+	LD	DE,P_CMXO	;Timeout
+	CALL	ZKOUT
+	LD	HL,(PTMOCT)	;Counter
+	INC	HL		;+1
+	LD	(PTMOCT),HL
+P_PIN3:	LD	HL,PCSTAT
+	RES	7,(HL)		;always quit!
+	JP	PSPIN1		;next Request
+	;
+PSPING:	;PING START/STOP
+	LD	A,(PCSTAT)
+	XOR	40H
+	RES	7,A		;received OFF
+	LD	(PCSTAT),A
+	BIT	6,A
+	JP	Z,D_PING	;STOP -> DISPLAY STAT.
+	;START
+	LD	HL,PSPEER
+	CALL	IPCHCK
+	JR	NC,PSPIN0	;OK
+	LD	DE,P_CMXV	;IP not valid
+	CALL	ZKOUT
+	LD	HL,PCSTAT
+	RES	6,(HL)		;STOP PING
+	RET			;CY=1 -> ERR
+PSPIN0:	LD	HL,P_LOGA
+	LD	BC,P_LOGE-P_LOGA
+	CALL	CLRMEM		;clear STAT
+	;'PING TO name=xxx.xxx.xxx.xxx WITH xxxx(xxxx) BYTES OF DATA.'
+	LD	DE,P_CMXB
+	CALL	ZKOUT
+	LD	DE,(PDMNBF)	;pointer
+	LD	A,(DE)
+	CP	'0'
+	JR	C,PSPINO	;<0 no Digit
+	CP	'9'+1
+	CCF			;>9 no Digit
+PSPINO:	CALL	C,ZKOUT		;Name Out
+	LD	DE,P_CMXX
+	CALL	C,ZKOUT		;'=' Out
+	LD	HL,PSPEER
+	CALL	IPOUT		;always IP Out 
+	LD	DE,P_CMXC
+	CALL	ZKOUT
+	LD	HL,(P_BFSZ)
+	CALL	PHLFDC##	;DataSize
+	LD	A,'('
+	CALL	COUT##
+	LD	DE,P_MHDL
+	ADD	HL,DE		;+ Headerlength
+	CALL	PHLFDC##	;= IP-Packet-Size
+	LD	A,')'
+	CALL	COUT##
+	LD	DE,P_CMXD
+	CALL	ZKOUT
+	LD	HL,(PSID)
+	INC	HL		;ID+
+	LD	(PSID),HL	;1. Request
+	LD	HL,0
+	LD	(PSSQNM),HL	;reset SQN
+PSPIN1:	;RQ = max.?
+	LD	HL,(PCOUNT)
+	LD	A,H
+	OR	L		;CY=0!
+	JR	Z,PSPIN2	;infinite
+	LD	DE,(PSRQCT)	;SRQ Counter
+	SBC	HL,DE
+	JR	Z,PSPIN3	;=max. -> stop
+PSPIN2:	LD	HL,(PSSQNM)
+	INC	HL		;SQN+
+	LD	(PSSQNM),HL
+	CALL	P_MAKE		;make MSG
+	LD	HL,(LINEBF)	;pointer Data
+	LD	DE,PSPEER	;Peer Data
+	LD	BC,(PSHSIZ)	;PacketSize
+	LD	A,(PINGSK)	;Socket
+	CALL	SENDTO
+	CALL	N_TIME
+	LD	(SNDTIM),HL	;save Time SEND
+	JR	NC,PSPIN4	;Send OK
+	;ARP-ERR
+	LD	DE,P_CMXP
+	CALL	ZKOUT
+	LD	HL,(PARECT)	;Counter
+	INC	HL		;+1
+	LD	(PARECT),HL
+	;close & reopen socket
+	CALL	PSCKRO		;reopen
+PSPIN3:	LD	HL,PCSTAT
+	RES	6,(HL)		;PING stop
+	JR	D_PING		;->STAT
+PSPIN4:	LD	HL,(PSRQCT)	;RQ Counter
+	INC	HL		;+1
+	LD	(PSRQCT),HL
+	XOR	A		;clear for Return
+	RET
+D_PING:	;display PING-STATISTIC
+	LD	DE,P_CMXK
+	CALL	ZKOUT
+	LD	HL,PSPEER
+	CALL	IPOUT
+	LD	A,':'
+	CALL	COUT##
+	CALL	NEWLN
+	LD	HL,(PSRQCT)
+	CALL	PHLFDC##
+	LD	DE,P_CMXL	;transmitted
+	CALL	ZKOUT
+	LD	HL,PRRPCT
+	LD	B,LOW((PCTRE-PRRPCT)/2)
+	XOR	A
+	LD	E,A
+	LD	D,A		;SUM&CY=0
+D_PIN1:	LD	A,E
+	ADC	A,(HL)
+	LD	E,A
+	INC	HL
+	LD	A,D
+	ADC	A,(HL)
+	LD	D,A
+	INC	HL
+	DJNZ	D_PIN1
+	EX	DE,HL
+	LD	C,L
+	LD	B,H
+	CALL	PHLFDC##
+	LD	DE,P_CMXM	;received
+	CALL	ZKOUT
+	LD	HL,(PARECT)
+	LD	DE,(PTMOCT)
+	ADD	HL,DE
+	CALL	PHLFDC##
+	LD	DE,P_CMXN	;lost
+	CALL	ZKOUT
+	LD	A,C
+	OR	B
+	CALL	Z,NEWLN
+	JR	Z,D_PIN2	;no Reply's
+	LD	A,','
+	CALL	COUT##
+	LD	DE,P_CMXI
+	CALL	ZKOUT
+	LD	HL,(PRSTTM)	;STAT-Time
+	CALL	PHLFDC##
+	LD	DE,P_CMXJ
+	CALL	ZKOUT
+D_PIN2:	LD	B,LOW((P_LOGE-PURMCT)/2)
+	LD	HL,PURMCT
+	LD	DE,P_CMX1
+D_PIN3:	PUSH	BC
+	CALL	D_PIUP		;DEST.UNREACH MSG ...
+	POP	BC
+	DJNZ	D_PIN3		;...TIME OUT ERROR
+	XOR	A		;clear for Return
+	RET	
+D_PIUP:	LD	C,(HL)
+	INC	HL
+	LD	B,(HL)
+	INC	HL
+	LD	A,C
+	OR	B
+	JR	Z,D_PIU1
+	PUSH	HL
+	PUSH	DE
+	CALL	ZKOUT
+	LD	L,C
+	LD	H,B
+	CALL	PHLFDC##
+	CALL	NEWLN
+	POP	DE
+	POP	HL
+D_PIU1:	LD	A,(DE)
+	INC	DE
+	CP	'$'
+	JR	NZ,D_PIU1
+	RET
+R_PING:	;IP-Socket RECEIVE
+	LD	IY,(LINEBF)	;pointer MSG-Buffer
+	CALL	N_TIME
+	LD	(RECTIM),HL	;save RECEIVE TIME 
+	LD	A,(PINGSK)
+	LD	HL,(LINEBF)	;pointer for Data
+	LD	DE,PRPEER	;for HeaderData
+	LD	BC,MAXMTU-RH_IPR ;IP-PacketSize - IP-Header
+	CALL	RECVFR		;Receive
+	RET	C		;no Data
+	LD	(HL),0		;for Checksum, if PacketSize is odd
+	LD	HL,(LINEBF)	;pointer Data
+	LD	DE,0		;Checksum=0
+	CALL	CHKSUM		;BC: RecSize
+	PUSH	IY
+	POP	HL
+	LD	DE,P_CHKS
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,PHCHKS	;Checksum of Received-Packet in HOrder!
+	CALL	NTOHS
+	LD	HL,PRHSIZ
+	LD	DE,PRNSIZ
+	CALL	NTOHS
+	PUSH	IY
+	POP	HL
+	LD	DE,P_SQNM
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,PHSQNM
+	CALL	NTOHS
+	LD	A,(IY+P_TYPE)
+	CP	PECHOREQUEST
+	JR	NZ,R_PI00
+	;if Request -> Reply Packet
+	LD	HL,(PHCHKS)	;CHECKSUM
+	LD	A,H
+	OR	L
+	RET	NZ		;Err: ignore Packet
+	LD	A,0FFH		;any
+	LD	D,SK_IPLRAW
+	LD	E,PT_ICMP	;IP-Protocol
+	CALL	SOCKET
+	RET	C		;no free Sockets 
+	CALL	CONNECT
+	JR	C,R_RPLE	;Socket ERR 
+	LD	(IY+P_TYPE),PECHOREPLY
+	LD	HL,(LINEBF)	;pointer Data
+	LD	BC,(PRHSIZ)	;Size HOrder!
+	PUSH	HL
+	PUSH	BC
+	PUSH	AF
+	CALL	CHKSMS		;make new CHECKSUM for Echo Packet
+	POP	AF
+	POP	BC
+	POP	HL
+	LD	DE,PRPEER	;Peer IP
+	CALL	SENDTO		;Echo Packet
+R_RPLE:	CALL	CLOSE
+	RET
+R_PI00:	;no Request 
+	LD	A,(PCSTAT)
+	BIT	6,A
+	RET	Z		;PING is not running
+	LD	DE,P_CMXE
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	LD	HL,PRPEER
+	CALL	Z,IPOUT	
+	LD	A,':'
+	CALL	Z,COUT##
+	;test CHECKSUM
+	LD	HL,(PHCHKS)
+	LD	A,H
+	OR	L
+	JR	Z,R_PI01	;=0 -> OK
+	LD	HL,(PCSECT)
+	INC	HL
+	LD	(PCSECT),HL
+	LD	DE,P_CMXH
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	;test IP's
+	LD	HL,PSPEER	;Send IP
+	LD	DE,PRPEER	;Recv IP
+	CALL	CMP4BT
+	JP	Z,R_PIN0	;OK (only Time Out)
+	;<> IP's -> ignore Packet
+	LD	A,(PCSTAT)	
+	BIT	2,A		;quiet ON?
+	CALL	Z,NEWLN		;no
+	RET
+R_PI01:	LD	A,(IY+P_TYPE)
+	CP	PECHOREPLY
+	JR	NZ,R_PI02
+	;ECHO Reply
+	LD	HL,PSPEER	;Send IP
+	LD	DE,PRPEER	;Recv IP
+	CALL	CMP4BT
+	JR	NZ,R_PI0E
+	LD	HL,PSSQNM	;Send SQN
+	LD	DE,PHSQNM	;Recv SQN
+	CALL	CMP2BT
+	JR	NZ,R_PI0E
+	PUSH	IY
+	POP	HL
+	LD	DE,P_ID		;Recv ID
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,PSID		;Send ID
+	CALL	CMP2BT
+	JR	Z,R_PI06	;OK & Data Out
+	;unknown MSG or PEER
+R_PI0E:	LD	HL,(PRUMCT)
+	INC	HL
+	LD	(PRUMCT),HL
+	LD	DE,P_CMXQ
+	;quiet Test OUT
+QTZOUT:	LD	A,(PCSTAT)	
+	BIT	2,A		;quiet ON?
+	CALL	Z,ZKOUT		;no
+	RET
+	;check other MSG Types
+R_PI02:	CP	PDESTUNREACH
+	JR	NZ,R_PI03
+	LD	HL,PURMCT
+	LD	DE,P_CMXR
+	JR	R_PIEJ
+R_PI03:	CP	PSOURCEQUENCH
+	JR	NZ,R_PI04
+	LD	HL,PSQUCT
+	LD	DE,P_CMXU
+	JR	R_PIEJ
+R_PI04:	CP	PTIMEEXCEED
+	JR	NZ,R_PI05
+	LD	HL,PTIECT
+	LD	DE,P_CMXS
+	JR	R_PIEJ
+R_PI05:	CP	PPARAMPROBLEM
+	JR	NZ,R_PI0E	;unknown
+	LD	HL,PPMPCT
+	LD	DE,P_CMXT
+R_PIEJ:	LD	C,(HL)
+	INC	HL
+	LD	B,(HL)
+	INC	BC
+	LD	(HL),B
+	DEC	HL
+	LD	(HL),C
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	JR	R_PIN6
+R_PI06:	;SIZE/SQN/Time Out
+	;Counter +
+	LD	DE,P_CMXF
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	LD	HL,(PRHSIZ)
+	CALL	Z,PHLFDC##
+	LD	DE,P_CMXG
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	LD	HL,(PHSQNM)
+	CALL	Z,PHLFDC##
+R_PIN0:	LD	DE,P_CMXI
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	PUSH	AF
+	LD	HL,(RECTIM)
+	LD	DE,(SNDTIM)
+	CALL	CALCPU		;HL=REC-SEND
+	POP	AF
+	CALL	Z,PHLFDC##
+	LD	DE,P_CMXJ
+	CALL	QTZOUT		;-> Z=1 quiet OFF
+	LD	BC,(PRRPCT)	;Counter ...
+	LD	A,B
+	OR	C
+	JR	Z,R_PIN5	;first Packet
+	LD	DE,(PRSTTM)
+	ADD	HL,DE
+	SRL	H
+	RR	L		;average
+R_PIN5:	LD	(PRSTTM),HL
+	INC	BC		;... +1
+	LD	(PRRPCT),BC
+R_PIN6:	LD	HL,PCSTAT
+	BIT	3,(HL)
+	LD	A,BEEP
+	CALL	NZ,COUT##	;audible ON
+	;PING Reply received = ON
+	SET	7,(HL)
+	XOR	A		;clear for Return
+	RET
+	;close & reopen socket
+PSCKRO:	LD	A,(PINGSK)	;old Socket
+	CALL	CLOSE
+PSCKOP:	LD	A,0FFH		;beliebig
+	LD	D,SK_IPLRAW	;IP-Layer RAW
+	LD	E,PT_ICMP	;IP-Protokoll
+	CALL	SOCKET
+	RET	C		;ERR
+	LD	(PINGSK),A	;new Socket
+	LD	DE,(P_TOS)
+	CALL	N_SSTOS		;set TOS
+	LD	DE,(P_TTL)
+	CALL	N_SSTTL		;set TTL
+	CALL	CONNECT		;now open
+	RET
+	;check forbidden PEER-IP's
+	;- 000-IP
+	;- limited Broadcast
+	;- directed Broadcast
+	;- Net-Address
+	;PI: HL - IP
+IPCHCK:	PUSH	HL
+	XOR	A
+	CALL	CPA4BT
+	POP	HL
+	SCF			;000-IP
+	RET	Z
+	PUSH	HL
+	LD	A,0FFH
+	CALL	CPA4BT
+	POP	HL
+	SCF			;limited BC
+	RET	Z
+	PUSH	HL
+	LD	DE,P_TEMP
+	LD	BC,SRCMSK
+	CALL	ORMASK
+	EX	DE,HL
+	DEC	A		;=FF
+	CALL	CPA4BT
+	POP	HL
+	SCF			;directed BC
+	RET	Z
+	LD	DE,P_TEMP
+	LD	BC,SRCMSK
+	CALL	ANDMSK
+	CALL	CMP4BT
+	SCF			;Net-Address
+	RET	Z
+	CCF			;OK
+	RET	
+ORMASK:	LD	A,4
+	PUSH	HL
+	PUSH	DE
+ORMAS1:	PUSH	AF
+	LD	A,(BC)
+	OR	(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	INC	BC
+	POP	AF
+	DEC	A
+	JR	NZ,ORMAS1
+	POP	DE
+	POP	HL
+	RET
+ANDMSK:	LD	A,4
+	PUSH	HL
+	PUSH	DE
+ANDMS1:	PUSH	AF
+	LD	A,(BC)
+	AND	(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	INC	BC
+	POP	AF
+	DEC	A
+	JR	NZ,ANDMS1
+	POP	DE
+	POP	HL
+	RET
+	;Make PING-REQUEST Packet in (LINEBF)
+P_MAKE:	LD	IY,(LINEBF)	;pointer MSG-Buffer
+	LD	A,PECHOREQUEST
+	LD	(IY+P_TYPE),A
+	XOR	A
+	LD	(IY+P_CODE),A
+	LD	HL,(PSID)
+	LD	(IY+P_ID),L
+	LD	HL,(PSID)
+	LD	(IY+(P_ID+1)),H
+	PUSH	IY
+	POP	HL
+	LD	DE,P_SQNM
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,PSSQNM
+	CALL	HTONS
+	PUSH	IY
+	POP	HL
+	LD	DE,P_DATA
+	ADD	HL,DE		;pointer MSG-Data
+	LD	BC,(P_BFSZ)
+	LD	A,B
+	OR	C
+	JR	Z,P_MNOD	;no Data
+	LD	A,(PCSTAT)
+	BIT	5,A
+	JR	NZ,P_MAK6
+	;User pattern OFF
+	LD	D,'a'
+	LD	E,'z'+1
+P_MAK1:	LD	(HL),D		;fill with a-z...
+	INC	HL
+	INC	D
+	LD	A,D
+	CP	E
+	JR	NZ,P_MAK2
+	LD	D,'a'
+P_MAK2:	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,P_MAK1
+	JR	P_MNOD
+P_MAK6:	;User pattern ON
+	LD	A,(P_PATN)
+	EX	AF,AF'
+	LD	DE,P_PATT
+P_MAK7:	LD	A,(DE)
+	LD	(HL),A
+	INC	HL
+	INC	DE
+	EX	AF,AF'
+	DEC	A
+	JR	NZ,P_MAK8
+	LD	A,(P_PATN)	;reset pattern
+	LD	DE,P_PATT
+P_MAK8:	EX	AF,AF'	
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,P_MAK7
+P_MNOD:	LD	(HL),0		;for Checksum, if PacketSize is odd
+	LD	DE,(LINEBF)	;first ADR MSG
+	SBC	HL,DE		;last-first
+	LD	B,H
+	LD	C,L		;Packet length
+	LD	(PSHSIZ),HL
+	EX	DE,HL
+CHKSMS:	PUSH	HL		;HL: first ADR Packet
+	LD	DE,P_CHKS
+	ADD	HL,DE
+	LD	(HL),0
+	INC	HL
+	LD	(HL),0		;clear memory Checksum !!!
+	POP	HL
+	LD	DE,0		;init Checksum
+	;calculate & write Checksum ICMP
+CHKSUM:	PUSH	HL		;first address
+	SRL	B
+	RR	C		;Bytes -> Words
+	JR	NC,CHKSBG
+	INC	BC		;if odd: Words + 1
+CHKSBG:	OR	A		;CY=0
+P_MAK3:	LD	A,E
+	ADC	A,(HL)
+	LD	E,A
+	INC	HL
+	LD	A,D
+	ADC	A,(HL)
+	LD	D,A
+	INC	HL
+	PUSH	AF		;save CY
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	Z,P_MAK4	;ready ?
+	POP	AF		;load CY
+	JR	P_MAK3
+P_MAK4:	POP	AF
+	JR	NC,P_MAK5	;last CY !
+	INC	E
+	JR	NZ,P_MAK5
+	INC	D
+P_MAK5:	POP	HL		;first address
+	LD	BC,P_CHKS	;IP-Checksum of MSG
+	ADD	HL,BC
+	LD	A,E
+	CPL			;1'CPL
+	LD	(HL),A		;save Nhigh
+	INC	HL
+	LD	A,D
+	CPL			;1'CPL
+	LD	(HL),A		;save Nlow
+	RET
+	
+;#######################################################
+;### PING START ########################################
+;#######################################################
+BEGIN:	;check for CP/M 2+
+	LD	C,CPMVER
+	CALL	BDOS
+	LD	(SYSVER),A	;CP/M version
+	AND	0F0H		;version required 2+
+	CP	20H
+	LD	DE,CPMERR
+	CALL	C,ZKOUT
+	JP	C,PGQUIT
+	LD	SP,STACK	;set local stack
+	;parse and test ARG's
+	;
+	;because Network Hardware-Driver is not initialized
+	; here, do not call hardware-related API functions,
+	;    only functions for CONVERSION are allowed!
+	;
+	LD	HL,DMA+1
+	LD	DE,ARGMAX	;table for ARG##
+	XOR	A
+	INC	A		;terminate Parameter with 0 
+	CALL	ARGV##		;parse ARG's
+	LD	DE,P_CMXA	;too many ARG's
+	JR	NZ,ETXOUT
+	;allocate memory
+	XOR	A		;free TPA
+	CALL	IALLOC##
+	LD	DE,255+1
+	CALL	ALLOC##
+	LD	DE,P_CMXY	;more TPA required
+	JR	Z,ETXOUT
+	LD	(PDMNBF),HL	;destination name buffer
+	LD	DE,255+1
+	CALL	ALLOC##
+	LD	DE,P_CMXY
+	JR	Z,ETXOUT
+	LD	(DMNBUF),HL	;domain name buffer
+	LD	DE,MAXMTU
+	CALL	ALLOC##
+	LD	DE,P_CMXY
+	JR	Z,ETXOUT
+	LD	(LINEBF),HL	;packet buffer
+	;init PING-RAM (because of start with 'go')
+	LD	HL,(PDMNBF)	;pointer
+	LD	(HL),0		;reset destination
+	LD	HL,PCSTAT
+	LD	A,(HL)
+	AND	20H		;reset state and remain User Pattern
+	LD	(HL),A
+	;test ARG's
+	LD	A,(ARGN)
+	OR	A
+	JR	NZ,PINGC2
+	SET	1,(HL)		;no ARG's -> show version
+	JP	P_OEND		;skip parser
+ETXOUT:	CALL	ZKOUT
+	JP	PENDE
+PINGC2:	;init first ARG-pointer
+	LD	HL,PARG1	;address of first ARG-PTR
+	LD	(P_TEMP),HL
+	JR	PINGC4
+PINGC3:	;count parsed ARG's
+	LD	HL,ARGN
+	DEC	(HL)
+	JP	Z,P_OEND	;ARG's parsed
+PINGC4:	;next ARG
+	LD	HL,(P_TEMP)
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	INC	HL
+	LD	(P_TEMP),HL	;save next ARG-PTR
+	EX	DE,HL		;HL: address ARG
+	LD	A,'-'
+	CP	(HL)
+	JP	NZ,P_O_DE	;destination found
+	INC	HL
+	LD	C,(HL)		;option char
+	INC	HL
+	LD	A,':'
+	CP	(HL)
+	JR	Z,PINGC6	;single option
+	;option string
+PINGC5:	XOR	A
+	OR	C		;string end?
+	JR	Z,PINGC3	;next option
+	EX	DE,HL
+	LD	HL,PCSTAT
+	AND	0DFH		;UCASE
+	CP	'A'		;audible
+	JR	NZ,P_OST1
+	SET	3,(HL)
+P_OST1:	CP	'H'		;help
+	JR	NZ,P_OST2
+	SET	0,(HL)
+P_OST2:	CP	'N'		;numeric
+	JR	NZ,P_OST3
+	SET	4,(HL)
+P_OST3:	CP	'Q'		;quiet
+	JR	NZ,P_OST4
+	SET	2,(HL)
+P_OST4:	CP	'V'		;version
+	JR	NZ,P_OST5
+	SET	1,(HL)
+P_OST5:	EX	DE,HL
+	LD	C,(HL)		;next char
+	INC	HL
+	JR	PINGC5
+PINGC6:	;single option
+	INC	HL		;address parameter
+	LD	A,C		;option char
+	AND	0DFH		;UCASE
+	CP	'C'
+	JR	Z,P_SOP1	;count
+	CP	'I'
+	JR	Z,P_SOP2	;interval
+	CP	'P'
+	JP	Z,P_SOP3	;pattern
+	CP	'U'
+	JP	Z,P_SOP4	;tos
+	CP	'S'
+	JP	Z,P_SOP5	;size packetdata
+	CP	'T'
+	JP	Z,P_SOP6	;ttl
+	CP	'W'
+	JP	Z,P_SOP7	;timeout
+	JR	PINGC3		;next option
+	;count of RQ's
+P_SOP1:	CALL	ATOI		;convert REQUESTS
+	JR	C,P_SO1E
+	LD	(PCOUNT),DE
+	JP	PINGC3		;next option
+P_SO1E:	LD	DE,P_SO1T
+	JP	ETXOUT
+P_SO1T:	DB	'Invalid value for option c: 1-65535 / 0 for infinite (default 4)','$'
+	;interval
+P_SOP2:	CALL	ATOI		;convert TIME
+	JR	C,P_SO2E
+	LD	HL,30000
+	SBC	HL,DE
+	JR	C,P_SO2E	;>30.000
+	LD	(P_INTV),DE
+	JP	PINGC3		;next option
+P_SO2E:	LD	DE,P_SO2T
+	JP	ETXOUT
+P_SO2T:	DB	'Invalid value for option i: 0-30.000ms (default 1.000ms)','$'
+	;pattern
+P_SOP3:	LD	B,32		;max. 32 characters
+	LD	DE,P_PATT	;pattern PTR
+P_SO3R:	LD	A,(HL)
+	INC	HL
+	CALL	ISHEX##
+	JR	NZ,P_SO3B	;<>hex -> break
+	CALL	CATH##		;ascii hex -> bin
+	BIT	0,B
+	JR	NZ,P_SO3L
+	;Bit 7-4
+	RLCA
+	RLCA
+	RLCA
+	RLCA
+	LD	(DE),A		;clear pattern byte and save char pattern
+	JR	P_SO3C
+P_SO3L:	;Bit 3-0
+	LD	C,A
+	LD	A,(DE)
+	OR	C
+	LD	(DE),A		;save char pattern
+	INC	DE		;next pattern byte
+P_SO3C:	DJNZ	P_SO3R		;repeat
+	LD	A,(HL)
+	CALL	ISHEX##
+	JR	Z,P_SO3E	;too many char's
+P_SO3B:	LD	A,32
+	SUB	B
+	SRL	A		;/2
+	LD	(P_PATN),A	;save number of full Bytes!
+	LD	HL,PCSTAT
+	SET	5,(HL)		;User Pattern ON
+	OR	A		;number>0?
+	JR	NZ,P_SO3J	;OK
+	RES	5,(HL)		;User Pattern OFF
+P_SO3J:	JP	PINGC3		;next option
+P_SO3E:	LD	DE,P_SO3T
+	JP	ETXOUT
+P_SO3T:	DB	'Invalid pattern: max. 16 HEX-Bytes allowed (0 for default a-z)','$'
+	;tos
+P_SOP4:	CALL	ATOI		;convert TOS
+	JR	C,P_SO4E
+	INC	D
+	DEC	D
+	JR	NZ,P_SO4E
+	LD	(P_TOS),A
+	JP	PINGC3		;next option
+P_SO4E:	LD	DE,P_SO4T
+	JP	ETXOUT
+P_SO4T:	DB	'Invalid value for option u: 0-255 (default 0)','$'
+	;size packetdata
+P_SOP5:	CALL	ATOI		;convert SIZE
+	JR	C,P_SO5E
+	LD	HL,MAXMTU-P_MHDL-RH_IPR ;subtract ICMP-Header and IP-Receiver-Headerlength
+	SBC	HL,DE
+	JR	C,P_SO5E	;too big (>1466)
+	LD	(P_BFSZ),DE
+	JP	PINGC3		;next option
+P_SO5E:	LD	DE,P_SO5T
+	JP	ETXOUT
+P_SO5T:	DB	'Invalid value for option s: 0-1466 (default 56 Byte)','$'
+	;ttl
+P_SOP6:	CALL	ATOI		;convert TTL
+	JR	C,P_SO6E
+	INC	D
+	DEC	D
+	JR	NZ,P_SO6E
+	LD	(P_TTL),A
+	JP	PINGC3		;next option
+P_SO6E:	LD	DE,P_SO6T
+	JP	ETXOUT
+P_SO6T:	DB	'Invalid value for option t: 0-255 (default 128)','$'
+	;timeout
+P_SOP7:	CALL	ATOI		;convert TIME
+	JR	C,P_SO7E
+	INC	D
+	DEC	D
+	JR	NZ,P_SO7E
+	OR	A
+	JR	Z,P_SO7E	;=0
+	CP	31
+	JR	NC,P_SO7E	;>30
+	LD	(P_TMO),A
+	JP	PINGC3		;next option
+P_SO7E:	LD	DE,P_SO7T
+	JP	ETXOUT
+P_SO7T:	DB	'Invalid value for option w: 1-30s (default 5s)','$'
+;---------------------------------
+P_O_DE:	;destination found: HL=PTR
+	LD	B,255		;max. length of Name 
+	LD	DE,(PDMNBF)	;dest. name buffer
+	XOR	A
+P_O_DC:	PUSH	BC
+	LDI			;->copy
+	POP	BC
+	CP	(HL)
+	JR	Z,P_O_DD	;destination string end
+	DJNZ	P_O_DC
+P_O_DD:	LD	(DE),A		;write 0-Byte
+;---------------------------------
+P_OEND:	;options parsed
+	LD	HL,PCSTAT
+	BIT	0,(HL)
+	LD	DE,P_CHLP
+	JP	NZ,ETXOUT	;show Help and exit
+	BIT	1,(HL)
+	CALL	NZ,PNGVER	;show Version
+	JP	NZ,PENDE	;and exit
+	LD	HL,(PDMNBF)	;PTR
+	XOR	A
+	OR	(HL)
+	JR	NZ,P_MKP1	;dest. found
+	LD	DE,P_NODE
+	JP	ETXOUT
+P_NODE:	DB	'No destination specified.',BEEP,'$'
+;-------init and test Network --------------------------
+P_MKP1:	;try Network init
+	XOR	A		;DRV->KOP (required only for KC85)
+	CALL	N_INIT
+	CALL	C,ZKOUT		;->DE=ERR-string
+	CALL	C,NEWLN
+	LD	DE,P_CVE2
+	JP	C,ETXOUT	;show "-h" and exit
+	;network available
+	CALL	NETTST		;configured?
+	JP	C,PENDE
+	CALL	ONTEST		;online?
+	JP	C,PENDE
+;--- resolve/make PSPEER from destination --------------
+	LD	HL,P_TEMP
+	LD	DE,(PDMNBF)	;PTR
+	LD	A,(DE)
+	CP	'0'
+	JR	C,P_MKP5	;<0 no Digit
+	CP	'9'+1
+	JR	NC,P_MKP5	;>9 no Digit
+	;try to convert num. IP from digit(s)
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	JR	C,P_MKP5	;Err->try Name
+	;resolve IP in P_TEMP
+	LD	A,(PCSTAT)
+	BIT	4,A
+	JR	NZ,P_MKP9	;numeric ON: no iquery
+	PUSH	HL
+	;copy IP to (DMNBUF) (preserves IP in P_TEMP for copy to PSPEER)
+	LD	DE,(DMNBUF)	;pointer
+	PUSH	DE
+	LD	BC,4
+	LDIR
+	;resolve IP in (DMNBUF)
+	POP	DE
+	LD	HL,(LINEBF)	;pointer
+	CALL	GHBADR		;iquery:(DE)IP->(DE)Name
+	POP	HL
+	JR	C,P_MKP9	;if ERR copy new IP to PSPEER only
+	;copy Name to (PDMNBF) for PING-Output (overwrites IP-String!)
+	PUSH	HL
+	EX	DE,HL
+	XOR	A
+	LD	DE,(PDMNBF)	;pointer
+P_MKP4:	LDI			;Name
+	CP	(HL)
+	JR	NZ,P_MKP4
+	LDI			;0-Byte
+	POP	HL
+	JR	P_MKP9		;and now copy new IP
+P_MKP5:	;copy Name to (DMNBUF) (preserves NAME in (PDMNBF) for PING-Output)
+	EX	DE,HL
+	XOR	A
+	LD	DE,(DMNBUF)	;pointer
+	PUSH	DE
+P_MKP6:	LDI			;Name
+	CP	(HL)
+	JR	NZ,P_MKP6
+	LDI			;0-Byte
+	;resolve NAME in (DMNBUF)
+	POP	DE
+	LD	HL,(LINEBF)	;pointer
+	CALL	GHBNAM		;query:(DE)Name->(DE)IP
+	EX	DE,HL		;(HL)IP
+	JR	NC,P_MKP9	;OK copy new IP
+	;A=ERR# from resolver
+	CP	3
+	JR	Z,P_MKP8	;SRV ERR 3
+	LD	DE,DNSQSE	;'Server'
+	CP	16
+	JR	C,P_MKP7
+	LD	DE,DNSQCE	;'Client'
+P_MKP7:	CALL	ZKOUT		;-ERR Out
+	CALL	PAFDC##		;ERR-number
+	JP	PENDE		;and exit
+P_MKP8:	LD	DE,DNSSE3
+	CALL	ZKOUT		;'unknown host '
+	LD	DE,(PDMNBF)	;pointer
+	CALL	ZKOUT		;Name Out
+	JP	PENDE		;and exit
+P_MKP9:	LD	DE,PSPEER
+	LD	BC,4
+	LDIR			;copy only valid IP's !
+	;init socket
+	CALL	PSCKOP		;open
+	LD	DE,P_CMXW
+	JP	C,ETXOUT	;socket-error
+	LD	HL,PSID
+	CALL	MZ4ID		;make Random-ID
+	CALL	PSPING		;start
+	JR	C,PINGRE	;ERR->break wo STAT/LU
+;------	PING-Client LOOP -------------------------------
+PINGLP:	LD	HL,PCSTAT
+	BIT	6,(HL)
+	JR	Z,PINGNE	;off = ready wo STAT
+	CALL	CST##		;CON ?
+	JR	NZ,PINGMP	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	CP	ETX
+	JR	Z,PINGSE	;STAT & close
+	CP	ESC
+	JR	Z,PINGSE	;STAT & close
+	CP	CR
+	CALL	Z,D_PING	;display STAT
+PINGMP:	;check Sender
+	CALL	P_PING		;PING SERVICE
+PINGRV:	;check Receiver
+	LD	A,(PINGSK)
+	LD	E,SL_RECV
+	CALL	SELECT		;check RecSize
+	CALL	NC,R_PING	;Data -> RECEIVE
+PINGLE:	;check Socket
+	LD	A,(PINGSK)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	INC	E
+	DEC	E		;offline ?
+	JR	NZ,PINGLP	;loop
+	LD	HL,PCSTAT
+	BIT	6,(HL)
+	JR	Z,PINGRO	;PING is not running
+	LD	HL,(PARECT)	;ARP-Err Counter
+	INC	HL		;+1
+	LD	(PARECT),HL
+PINGRO:	CALL	PSCKRO		;reopen
+	JR	C,PINGRE	;ERR->break wo STAT/LU
+	JR	PINGLP		;loop
+;------	STOP with STAT and NEWLN -----------------------
+PINGSE:	CALL	PSPING		;STOP and STAT
+	;1 LINE UP
+PINGNE:	LD	A,LNUP
+;	CALL	COUT##	
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	;close & end
+PINGRE:	LD	A,(PINGSK)
+	CALL	CLOSE		;release Socket
+PENDE:	;PING Quit
+	CALL	NEWLN		;always NEWLN
+PGQUIT:	LD	C,0		;go to CP/M
+	CALL	BDOS		;don't JUMP (gives an Error with Z-System)
+	;
+;*** Stack local ***********************
+	DS	64,0		;depth = 32
+STACK	EQU	$
+	;
+;***************************************
+EEMAIN	EQU	$	;last ADR main program
+;*** Code-End **************************
+
+IF2        
+	.PRINTX "PINGxx.COM"
+	.RADIX  16
+        PRMSG   <KCN-INC LENGTH:>,%(AAMAIN-103H)
+        PRMSG   <    MAIN BEGIN:>,%AAMAIN
+        PRMSG   <   MAIN LENGTH:>,%(EEMAIN-AAMAIN)
+        PRMSG   <  LAST ADDRESS:>,%EEMAIN
+        PRMSG   <PROGRAM LENGTH:>,%(EEMAIN-100H)
+	.RADIX  10
+ENDIF
+	.DEPHASE
+	END

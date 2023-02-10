@@ -1,0 +1,1347 @@
+;*******************************************************
+;
+;	     RAW-TCP PRINT CLIENT CP/M 2+
+;
+;		###     KCNET     ###
+;		 WIZnet TCP/IP-Stack 
+;		###  susowa 2008  ###
+;
+;  Name		: NPRINTxx.MAC
+;  Date		: 05.02.2010
+;  Modified	: 31.05.2016
+;		: 21.11.2022 d_kef
+;  Hardware	: Net4CPC - W5100S
+;
+;  extern       : SYSLIB.REL
+;
+;  Includes:
+;     KCNET.INC - Configuration
+;   N4C-W51.INC - Interface driver Net4CPC W5100S
+;  W5100-xx.INC - TCP/IP and Socket driver
+;   DNSC-xx.INC - DNS client
+;
+;*******************************************************
+
+;*** VERSION *******************************************
+V_MAJOR	EQU	1
+V_MINOR	EQU	0
+;*******************************************************
+
+;*** MACROS ********************************************
+NO	EQU	0
+YES	EQU	NOT NO
+	;
+PRMSG   MACRO   MSG,N       
+	.PRINTX *MSG,N*
+	ENDM
+;*** common Equations **********************************
+	;destination
+        .PHASE  00100H
+	;CPU
+	.Z80
+	;CP/M 2+ constants
+BDOS	EQU	5
+DMA     EQU	80H
+	;BDOS
+WBOOT	EQU	0		;warm boot
+CPMVER	EQU	12		;get CP/M-Version
+STBEMD	EQU	45		;set BDOS error-mode
+CPMEXV	EQU	48		;get extended Version
+GTCFLG	EQU	100		;get ZSDOS/ZDDOS flags
+STCFLG	EQU	101		;set ZSDOS/ZDDOS flags
+;*******************************************************
+
+;*** Start of Code *************************************
+	;start address
+SNOGO:	JP	BEGIN
+	;ZCPR
+	DB	'Z3ENV'
+	DB	1		;type 1
+Z3EPTR:	DW	0		;pointer
+	;"KCNet" files
+	INCLUDE	KCNET.INC	;config file
+;
+	CKMAC	EQU	NO
+	INCLUDE	N4C-W51.INC	;Net4CPC - W5100S routines
+;
+	INCLUDE	W5100-12.INC	;TCP/IP+Socket-Driver
+;
+	INCLUDE	DNSC-11.INC	;DNS-Client
+;
+	;first address main
+AAMAIN	EQU	$
+;*******************************************************
+
+;*** Work RAM ******************************************
+BSSTAM:	DB	0		;screen state (KC85)
+SYSVER:	DB	0		;CP/M-Version
+EXTVER:	DB	0		;extended CP/M-Version
+EXTCFG:	DW	0		;SYS-Config ZSDOS/ZDDOS
+;NPRINT-State
+NPSTAT:	DB	0
+	;7 = 1 - (TXPMSG) message-pointer active
+	;6 = 1 - 
+	;5 = 1 - 
+	;4 = 1 - 
+	;3 = 1 - german conversion of printer file data
+	;2 = 1 - reset bit 7 of printer file data
+	;1 = 1 - Show Version ON
+	;0 = 1 - Show Help ON
+;DATA-State
+DTSTAT:	DB	0
+	;7 = 1 - TCP connection established
+	;6 = 1 - 
+	;5 = 1 - 
+	;4 = 1 - 
+	;3 = 1 - 
+	;2 = 1 - Printer file opened
+	;1 = 1 - Code output line opened
+	;0 = 1 - Send data pending
+	;network
+PR_SCK:	DB	0FFH		;socket-handle
+P_PEER:	DB	0,0,0,0		;PRINT Server-IP NOrder
+P_PORT:	DB	023H,08CH	;Standard RAW-TCP Port 9100 NOrder
+P_NBUF:	DW	0000H		;pointer to domain name buffer
+P_DBUF:	DW	0000H		;pointer to network data buffer
+P_DPTR:	DW	0000H		;data pointer
+P_DSIZ:	DW	0000H		;data size
+P_RBUF:	DW	0000H		;pointer to receive data buffer
+RDBCNT:	DB	0		;byte counter read size
+RDSIZE:	DB	0,0,0,0		;read size printer file (32 bit)
+SDSIZE:	DB	0,0,0,0		;send size (32 bit)
+	;ASCII string for output of 32-bit dec. numbers
+ASC32:	DS	10+1,0
+	;Table for ARGV## - addresses
+ARGMAX:	DB	2		;max. 2 Arguments (1+x)
+ARGN:	DB	0		;Number of Arguments found
+TARG1:	DW	0		;ADR ARG1
+TARG2:	DW	0		;ADR ARG2
+CUR_DU:	DW	0		;current DU: (low=U)
+SRVPTR:	DW	0		;server cmdline string pointer
+TXPMSG:	DW	T_CMXA		;message pointer
+TEMP:	DS	10,0		;temp. buffer
+	;records for printfile
+PRFREC	EQU	11		;11*128=1408 bytes (< MAXMTU !)
+	;printfile
+PRN_DU:	DW	0		;printer file DU: (low=U)
+PRN_NM:	DW	0		;pointer to printer file name
+	;
+PRFCTL:	DB	PRFREC		;used number of records
+	DS	5,0		;filled in by FXIO
+PRFBUF:	DW	0000H		;pointer to working file buffer
+PRFFCB:	DB	0		;filled in by FXIO to 0
+	DS	8,' '		;file name
+	DS	3,' '		;file type
+	DS	24,0		;filled in by FXIO
+	;Messages
+T_CMXA:	DB	'Unknown Error !',BEEP,0
+T_CMXB:	DB	'No socket available !',BEEP,0
+T_CMXC:	DB	'Socket connect Error !',BEEP,0
+T_CMXD:	DB	'More TPA required !',BEEP,0
+T_CMXE:	DB	'Too few arguments found (help with -h) !',BEEP,0
+T_CMXF:	DB	'Timeout Error !',BEEP,0
+T_CMXG:	DB	'Connect to ',0
+T_CMXH:	DB	'connected !',0
+T_CMXI:	DB	'Terminated by User !',BEEP,0
+T_CMXJ:	DB	'Print-Server has disconnected unexpectedly !',BEEP,0
+T_CMXK:	DB	'Print-Server connection closed.',0
+T_CMXL:	DB	'Syntax Error DU: !',BEEP,0
+T_CMXM: DB	'Syntax Error FN.FT (use 8.3 without <>.,:;=*?[]) in ',0
+T_CMXN:	DB	'Error opening printer file ',0
+T_CMXO:	DB	' !',BEEP,0
+T_CMXP:	DB	'Syntax Error decimal code ',0
+T_CMXQ:	DB	'Sending data to Print-Server failed !',BEEP,0
+T_CMXR:	DB	' data byte was read from ',0
+T_CMXS:	DB	' data bytes were read from ',0
+T_CMXT:	DB	' data byte was sent to the Print-Server.',0
+T_CMXU:	DB	' data bytes were sent to the Print-Server.',0
+T_CMXV:	DB	' ... ',0
+T_CMXW:	DB	'Syntax Error ASCII code ',0
+T_CMXX:	DB	'Send printer code(s):',0
+	;SYS-Error message
+CPMERR:	DB	'CP/M-System 2+ required !',BEEP,0
+	;DNS resolver
+DNSSYE:	DB	'Syntax error "server[:port]" !',BEEP,0
+DNSSEU:	DB	'DNS name error!',BEEP,0
+DNSQSE:	DB	'DNS server error '
+DNSQSN:	DB	'   ',BEEP,0
+DNSQCE:	DB	'DNS client error '
+DNSQCN:	DB	'   ',BEEP,0
+	;NPRINT-Usage
+NPHELP:	DB	'nprint [-h|v]|[-rg] server[:port]'
+	DB	' [<code> ...]|[[DIR|DU:]FN.FT ...]',CR,LF
+	DB	LF
+	DB	' Options:   -h|v - show help or version and exit'
+	DB	CR,LF
+	DB	'              -r - reset bit 7 of printer file data'
+	DB	CR,LF
+	DB	'              -g - german conversion of printer file data'
+	DB	CR,LF
+	DB	'          server - Print-Server name or IP-address'
+	DB	CR,LF
+	DB	'            port - RAW-TCP port (standard: 9100)'
+	DB	CR,LF
+	DB	'    Data:          in any number and sequence'
+	DB	CR,LF
+	DB	'           FN.FT - printer file(s)'
+	DB	CR,LF
+	DB	'          <code> - printer code(s)'
+	DB	CR,LF
+	DB	'                    control char: e.g. ESC (see description)'
+	DB	CR,LF
+	DB	'                      ASCII char: ! to ` (33 ... 96)'
+	DB	CR,LF
+	DB	'                                  { to ~ (123 ... 126)'
+	DB	CR,LF
+	DB	'                    decimal code: 2 or 3 digits (00 ... 255)'
+	DB	0
+	;NPRINT-Version
+NPVER1:	DB	'###   RAW-TCP Print Client CP/M 2+   ###',CR,LF
+	DB	'              Version ',V_MAJOR+'0','.',V_MINOR+'0',CR,LF
+	DB	'          "KCNet TCP/IP-Stack"',CR,LF
+	DB	'### copyright 2010-2016  by >susowa< ###',CR,LF
+	DB	LF,0
+NPVER2:	DB	CR,LF
+	DB	'           Show Help with -h',0
+	;
+;*** printer code table ********************************
+NPCTAB:	DB	'NUL',0		;Null character
+	DB	'SOH',0		;Start of heading
+	DB	'STX',0		;Start of text
+	DB	'ETX',0		;End of text
+	DB	'EOT',0		;End of transmission
+	DB	'ENQ',0		;Enquiry
+	DB	'ACK',0		;Acknowledgment
+	DB	'BEL',0		;Audible bell
+	DB	'BS',0		;Backspace
+	DB	'HT',0		;Horizontal tab
+	DB	'LF',0		;Line feed
+	DB	'VT',0		;Vertical tab
+	DB	'FF',0		;Form feed
+	DB	'CR',0		;Carriage return
+	DB	'SO',0		;Shift out
+	DB	'SI',0		;Shift in
+	DB	'DLE',0		;Data link escape
+	DB	'DC1',0		;Device control 1
+	DB	'DC2',0		;Device control 2
+	DB	'DC3',0		;Device control 3
+	DB	'DC4',0		;Device control 4
+	DB	'NAK',0		;Negative acknowledgment
+	DB	'SYN',0		;Synchronous idle
+	DB	'ETB',0		;End of transmission block
+	DB	'CAN',0		;Cancel
+	DB	'EM',0		;End of medium
+	DB	'SUB',0		;Substitute character
+	DB	'ESC',0		;Escape
+	DB	'FS',0		;File separator
+	DB	'GS',0		;Group separator
+	DB	'RS',0		;Record separator
+	DB	'US',0		;Unit separator
+	DB	'SP',0		;White space
+	DB	'DEL',0		;Delete
+	DB	0		;End of code table
+	;
+NPCODE:	DB	0		;NUL – Null character
+	DB	1		;SOH – Start of heading
+	DB	2		;STX – Start of text
+	DB	3		;ETX – End of text
+	DB	4		;EOT – End of transmission
+	DB	5		;ENQ – Enquiry
+	DB	6		;ACK – Acknowledgment
+	DB	7		;BEL – Audible bell
+	DB	8		;BS – Backspace
+	DB	9		;HT – Horizontal tab
+	DB	10		;LF – Line feed
+	DB	11		;VT – Vertical tab
+	DB	12		;FF – Form feed
+	DB	13		;CR – Carriage return
+	DB	14		;SO – Shift out
+	DB	15		;SI – Shift in
+	DB	16		;DLE – Data link escape
+	DB	17		;DC1 – Device control 1
+	DB	18		;DC2 – Device control 2
+	DB	19		;DC3 – Device control 3
+	DB	20		;DC4 – Device control 4
+	DB	21		;NAK – Negative acknowledgment
+	DB	22		;SYN – Synchronous idle
+	DB	23		;ETB – End of transmission block
+	DB	24		;CAN – Cancel
+	DB	25		;EM – End of medium
+	DB	26		;SUB – Substitute character
+	DB	27		;ESC – Escape
+	DB	28		;FS – File separator
+	DB	29		;GS – Group separator
+	DB	30		;RS – Record separator
+	DB	31		;US – Unit separator
+	DB	32		;SP – White space
+	DB	127		;DEL – Delete
+	;
+;### Math routines by Werner Cirsovius #################
+;*******************************************************
+;
+;	Copyright (C)	Werner Cirsovius
+;
+;		Hohe Weide 44
+;		D-20253 Hamburg
+;		Tel.: +49-40-4223247
+;
+;		Version 1.0 October 1989
+;
+;*******************************************************
+	;32-bit integer arithmetic
+DINSIN:	DB	0		;reserved for SIN32
+..RES:	DS	10,0		;max. digits dec. string
+RES.LEN	equ	$-..RES		;length
+$$NUM:	DB	0,0,0,0		;first number
+$NUM:	DB	0,0,0,0		;second number
+$RES:	DB	0,0,0,0		;result
+;
+;	Convert 32 bit integer to ASCII decimal string
+; ENTRY	Reg pair HL points to 32 bit number
+;	Reg pair DE points to string
+;	Reg B holds end marker of string
+;	(usually zero or $)
+; EXIT	Decimal string closed by character in B
+;	Reg pair HL points to close location
+dout32:
+	push	ix
+	push	iy
+	push	bc		; Save entry
+	push	de
+	ld	de,$$num
+	ld	bc,4
+	ldir			; Get value
+	ld	hl,..res
+	ld	(hl),0
+	ld	e,l
+	ld	d,h
+	inc	de
+	ld	bc,res.len-1
+	ldir			; Clear result
+	ld	iy,$$dec	; Point to table
+	ld	ix,$$num
+	ld	b,res.len
+	ld	hl,..res
+out.loop:
+	call	divfix		; Divide by 10**N
+	ld	de,-4
+	add	iy,de		; next table entry
+	djnz	out.loop
+	ld	de,..res
+	ld	b,res.len-1
+	pop	hl		; Get string
+loop.1:
+	ld	a,(de)		; Check zero
+	or	a
+	jr	nz,loop.ex
+	inc	de
+	djnz	loop.1
+loop.ex:
+	inc	b
+loop.2:
+	ld	a,(de)		; Unpack
+	add	a,'0'
+	ld	(hl),a		; .. as ASCII
+	inc	de
+	inc	hl
+	djnz	loop.2
+	pop	bc
+	ld	(hl),b		; Close string
+	pop	iy
+	pop	ix
+	ret
+divfix:
+	call	@csub32		; Subtract
+	jr	c,div.done	; Check <0
+	inc	(hl)		; Count digits
+	jr	divfix
+div.done:
+	call	@cadd32		; Make >0
+	inc	hl
+	ret
+@cadd32:
+	ld	a,(ix+3)	; Add four bytes
+	add	a,(iy+3)
+	ld	(ix+3),a
+	ld	a,(ix+2)
+	adc	a,(iy+2)
+	ld	(ix+2),a
+	ld	a,(ix+1)
+	adc	a,(iy+1)
+	ld	(ix+1),a
+	ld	a,(ix+0)
+	adc	a,(iy+0)
+	ld	(ix+0),a
+	ret
+@csub32:
+	ld	a,(ix+3)	; Subtract four bytes
+	sub	(iy+3)
+	ld	(ix+3),a
+	ld	a,(ix+2)
+	sbc	a,(iy+2)
+	ld	(ix+2),a
+	ld	a,(ix+1)
+	sbc	a,(iy+1)
+	ld	(ix+1),a
+	ld	a,(ix+0)
+	sbc	a,(iy+0)
+	ld	(ix+0),a
+	ret
+	;
+	db	000h,000h,000h,001h	; 1
+	db	000h,000h,000h,00ah	; 10
+	db	000h,000h,000h,064h	; 100
+	db	000h,000h,003h,0e8h	; 1000
+	db	000h,000h,027h,010h	; 10000
+	db	000h,001h,086h,0a0h	; 100000
+	db	000h,00fh,042h,040h	; 1000000
+	db	000h,098h,096h,080h	; 10000000
+	db	005h,0f5h,0e1h,000h	; 100000000
+$$dec:	db	03bh,09ah,0cah,000h	; 1000000000
+	;
+;### common SUB-programs ###############################
+	;CR+LF Out
+NEWLN:	PUSH	AF
+	LD	A,CR
+	CALL	COUT##
+	LD	A,LF
+	CALL	COUT##
+	POP	AF
+	RET
+	;(HL) 32 bit number to CON Out
+A32OUT:	LD	DE,ASC32
+	LD	B,0
+	CALL	dout32		;convert ...
+	LD	DE,ASC32	;... out -> 
+	;(DE)-string+0/'$' Out
+ZKOUT:	PUSH	AF
+ZKOU1:	LD	A,(DE)
+	INC	DE
+	AND	A
+	JR	Z,ZKOU2
+	CP	'$'
+	JR	Z,ZKOU2
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	ZKOU1
+ZKOU2:	POP	AF
+	RET
+	;show Version
+NPVER:	PUSH	AF
+	LD	DE,NPVER1
+	CALL	ZKOUT
+	LD	DE,N_DLBL	;IF-driver label
+	CALL	ZKOUT
+	LD	DE,NPVER2
+	CALL	ZKOUT
+	POP	AF
+	RET
+	;pending message to CON:
+MSGOUT:	PUSH	HL
+	PUSH	DE
+	LD	HL,NPSTAT
+	BIT	7,(HL)
+	RES	7,(HL)		;quit 
+	LD	DE,(TXPMSG)	;PTR
+	CALL	NZ,ZKOUT	;message
+	POP	DE
+	POP	HL
+	RET
+	;activate out message
+ACTOUT:	PUSH	HL
+	LD	(TXPMSG),DE	;load MSG PTR
+	LD	HL,NPSTAT
+	SET	7,(HL)
+	POP	HL
+	RET
+	;test named DIR's
+TSTNDR:	LD	DE,(Z3EPTR)
+	LD	A,D
+	OR	E
+	SCF
+	RET	Z		;no ZCPR
+	PUSH	HL		;save PTR
+	LD	HL,21
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)		;address of first NDIR
+	INC	HL
+	XOR	A
+	OR	(HL)		;load and test counter
+	POP	HL		;restore PTR
+	RET	NZ		;>0
+	CCF			;=0
+	RET
+	;load new DIR: to BC and inc. PTR
+	;PO: BC - new DU if CY=0
+TSTDIR:	CALL	TSTNDR
+	RET	C
+	PUSH	HL		;save PTR
+	LD	B,A
+TSTDI1:	LD	A,(DE)		;NDIR
+	OR	A
+	JR	Z,TDUERR	;no more entries
+	PUSH	BC
+	LD	B,A		;Drive
+	DEC	B		;0... for LOGUD## !
+	INC	DE
+	LD	A,(DE)
+	LD	C,A		;User
+	INC	DE
+	PUSH	HL		;DIR
+	PUSH	DE		;NDIR
+	PUSH	BC		;save DU:
+	LD	B,8
+TSTDI2:	LD	A,(DE)
+	CP	' '
+	JR	Z,TSTDI3	;end of NDIR
+	LD	C,A
+	LD	A,(HL)
+	CALL	CAPS##		;ucase
+	CP	C
+	JR	NZ,TSTDI4 	;DIR<>NDIR
+	INC	HL
+	INC	DE
+	DJNZ	TSTDI2
+TSTDI3:	CALL	TDUEND		;end of DIR ?
+TSTDI4:	POP	BC
+	POP	DE
+	JR	NZ,TSTDI5
+	;DIR=NDIR
+	POP	DE		;retain HL = end of DIR !
+	POP	DE		;retain BC = new DU !
+	JR	TDUSOK
+TSTDI5:	POP	HL
+	EX	DE,HL
+	LD	BC,16
+	ADD	HL,BC
+	EX	DE,HL		;DE=next NDIR
+	POP	BC
+	DJNZ	TSTDI1
+	JR	TDUERR		;no more entries
+	;load new D|U: to BC and inc. PTR
+	;PI:  BC - current Drive/User	
+	;PO: B|C - new Drive|User if CY=0
+TSTDRU:	PUSH	HL
+	LD	A,(HL)
+	CALL	ISALPHA##
+	JR	Z,TDDRIV	;A-Z
+	CALL	ISDIGIT##
+	JR	Z,TDUSER	;0-9
+TDUERR:	POP	HL		;reset HL !
+	SCF
+	RET
+TDUEND:	LD	A,(HL)
+	OR	A
+	RET	Z
+	CP	':'
+	RET
+TDDRIV:	AND	05FH		;UCASE
+	SUB	'A'		;new Drive
+	CP	'P'-'A'+1
+	JR	NC,TDUERR
+	LD	B,A
+	INC	HL
+	CALL	TDUEND
+	JR	Z,TDUSOK
+	CALL	ISDIGIT##
+	JR	NZ,TDUERR
+TDUSER:	CALL	EVAL10##	;new USER
+	CALL	TDUEND
+	JR	NZ,TDUERR
+	LD	A,E
+	CP	32
+	JR	NC,TDUERR
+	LD	C,A
+	CCF			;CY=0!
+TDUSOK:	POP	DE		;retain HL !
+	RET
+LOGTST:	;login DU: <> (BC)
+	PUSH	HL
+	PUSH	BC
+	CALL	RETUD##
+	LD	H,B
+	LD	L,C
+	POP	BC
+	OR	A
+	SBC	HL,BC
+	CALL	NZ,LOGUD##
+	POP	HL
+	RET
+	;load FCB from (HL)
+	;PI:   HL - PTR to Zstring
+	;      DE - PTR to FCB
+	;PO: CY=1 - Err-Character in Input
+GETFCB:	;clear all
+	INC	DE		;first char in FCB
+	PUSH	DE
+	EX	DE,HL
+	LD	B,8+3
+GETFC1:	LD	(HL),' '
+	INC	HL
+	DJNZ	GETFC1
+	EX	DE,HL
+	POP	DE
+	;copy Input: <>.,:;=*?[] not allowed
+	LD	B,8		;F max. 8 Chr
+	PUSH	DE
+GETFC3:	LD	A,(HL)
+	CP	' '+1
+	JR	NC,GETFC4
+	;Input ready (toggle CY!)
+GETFER:	POP	DE
+	CCF
+	RET
+GETFC4:	INC	HL
+	CP	'.'
+	JR	Z,GETFC8	;cont. with T
+	CALL	CPERRC		;(CY=0!)
+	JR	Z,GETFER	;ERR not allowed CHR
+	CALL	CAPS
+	LD	(DE),A
+	INC	DE
+	DJNZ	GETFC3
+	LD	A,(HL)		;F ready
+	CP	'.'
+	JR	NZ,GETFC8
+	INC	HL		;skip '.'
+GETFC8:	POP	DE
+	EX	DE,HL
+	LD	BC,8		;FN
+	ADD	HL,BC
+	EX	DE,HL
+	LD	B,3		;T max. 3 Chr
+GETFC9:	LD	A,(HL)
+	CP	' '+1
+	CCF
+	RET	NC		;Input ready
+	INC	HL
+	CALL	CPERRC
+	CCF			;set CY!
+	RET	Z		;ERR not allowed CHR
+	CALL	CAPS
+	LD	(DE),A
+	INC	DE
+	DJNZ	GETFC9
+	OR	A		;T ready
+	RET
+	;compare not allowed CHR's
+ERRCHR:	DB	'<>.,:;=*?[]'
+ERRCLG	EQU	$-ERRCHR
+CPERRC:	PUSH	HL
+	PUSH	BC
+	LD	HL,ERRCHR
+	LD	BC,ERRCLG
+	CPIR
+	SCF
+	CCF			;reset CY!
+	POP	BC
+	POP	HL
+	RET
+	;compare A-(HL) 4 Byte
+CPA4BT:	LD	BC,4
+CPABTL:	CPI
+	RET	NZ
+	JP	PE,CPABTL
+	RET			;Z=1 same
+	;Online-Test with OUT message to CON
+	;PO:	CY=1 offline & DE=OUT message
+ONTEST:	CALL	N_LSTA		;LINK STATE
+	XOR	A
+	OR	E		;OK?
+	LD	DE,NONTXT
+	JR	NETTSE
+NONTXT:	DB	'Network-cable not connected !',BEEP,0
+	;Network-Test with OUT message to CON
+	;PO:	CY=1 offline & DE=OUT message
+NETTST:	LD	HL,TEMP		;local network
+	PUSH	HL
+	CALL	N_GLIP		;read IP
+	CALL	N_GLMA		;read MASK
+	XOR	A
+	LD	DE,NKNTXT
+	POP	HL
+	CALL	CPA4BT		;IP 4*000 ?
+	JR	Z,NETTSE	;not conf.
+	CALL	CPA4BT		;SNM 4*000 ?
+NETTSE:	SCF			;Error
+	RET	Z		;not conf./offline
+	CCF			;OK
+	RET
+NKNTXT:	DB	'Network not configured !',BEEP,0
+;### Network SUB-programs ##############################
+	;- resolve host ZString (name|IP-string[:port])
+	;- copy valid IP address to P_PEER
+	;- copy valid port to P_PORT
+	;PE:   HL - address of server ZString
+	;PA: CY=1 - ERR
+	;
+MKHOST:	PUSH	HL
+MKPOR1:	LD	A,(HL)
+	CP	':'		;find PORT
+	JR	Z,MKPOR2
+	OR	A
+	JR	Z,MKPOR3	;not found (CY=0!)
+	INC	HL
+	JR	MKPOR1
+MKPOR2:	LD	(HL),0		;clear!
+	INC	HL
+	CALL	ATOI		;(HL)STRING->DE=PORT#
+	LD	(TEMP),DE
+	LD	HL,TEMP
+	LD	DE,P_PORT
+	CALL	NC,HTONS	;ATOI=OK: conv.+copy
+MKPOR3:	POP	HL
+	LD	DE,DNSSYE	;'Syntax Error'
+	JR	C,MKHOS3	;Err
+	LD	A,(HL)
+	OR	A
+	JR	Z,MKHOS3	;no Host from input
+	CP	'0'
+	JR	C,MKHOS1	;<0 no Digit
+	CP	'9'+1
+	JR	NC,MKHOS1	;>9 no Digit
+	;try to convert num. IP from digit(s)
+	EX	DE,HL
+	LD	HL,P_PEER
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	RET	NC		;if successful -> OK
+	EX	DE,HL
+MKHOS1:	;copy name to (DMNBUF)
+	LD	DE,(P_NBUF)	;PTR to DMN buffer
+	PUSH	DE
+	CALL	COPYNM
+	;resolve name
+	POP	DE
+	LD	HL,(P_DBUF)	;PTR to data buffer
+	CALL	GHBNAM		;query:(DE)Name->(DE)IP
+	EX	DE,HL		;HL: numerical IP
+	JR	NC,MKHOS4	;OK: copy IP
+	;A=ERR# from resolver
+	LD	DE,DNSSEU	;Name error
+	CP	3
+	JR	Z,MKHOS3
+	LD	HL,DNSQSE	;'Server'
+	LD	DE,DNSQSN
+	CP	16
+	JR	C,MKHOS2
+	LD	HL,DNSQCE	;'Client'
+	LD	DE,DNSQCN
+MKHOS2:	CALL	MAFDC##		;write ERR-number
+	EX	DE,HL
+MKHOS3:	CALL	ACTOUT
+	SCF			;Err
+	RET
+MKHOS4:	LD	DE,P_PEER
+	LD	BC,4
+	LDIR			;copy num. IP to HOSTIP
+	OR	A		;OK
+	RET
+	;copy domain ZString (HL) -> (DE)
+COPYNM:	LD	B,255		;max. length
+	PUSH	AF
+	XOR	A
+COPYNR:	PUSH	BC
+	LDI			;copy
+	POP	BC
+	CP	(HL)
+	JR	Z,COPYNE	;destination string end
+	DJNZ	COPYNR
+COPYNE:	LD	(DE),A		;write 0-Byte
+	INC	DE		;EA+1
+	POP	AF
+	RET
+	;Print TCP-Data to CON
+PRDATA:	CALL	NEWLN
+PRDAT0:	LD	A,(PR_SCK)
+	LD	HL,(P_RBUF)
+	LD	BC,MAXSEG	;Size max.!
+	CALL	RECV		;Recv TCP-Data (RecvSIZE BC)
+	RET	C		;no (more) Data
+	LD	HL,(P_RBUF)
+PRDAT1:	LD	A,(HL)
+	CP	LF
+	JR	Z,PRDAT2
+	CP	CR
+	JR	Z,PRDAT2
+	CP	020H
+	JR	C,PRDAT3	;drop other CTRL
+	CP	080H
+	JR	NC,PRDAT3	;drop >7FH
+PRDAT2:	CALL	COUT##		;ASCII to CON
+PRDAT3:	INC	HL
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,PRDAT1
+	JR	PRDAT0		;get all data
+SVSIZE:	;add BC to save size
+	PUSH	AF
+	LD	A,(IX+3)
+	ADD	A,C
+	LD	(IX+3),A
+	LD	A,(IX+2)
+	ADC	A,B
+	LD	(IX+2),A
+	LD	A,(IX+1)
+	ADC	A,0
+	LD	(IX+1),A
+	LD	A,(IX)
+	ADC	A,0
+	LD	(IX),A
+	POP	AF
+	RET
+SSRDSZ:	;save+show read size
+	LD	IX,RDSIZE
+	CALL	SVSIZE		;save read size +(BC)
+	LD	HL,DTSTAT
+	BIT	1,(HL)		;Code output line opened?
+	RES	1,(HL)		;close
+	CALL	NZ,NEWLN	;yes -> new line
+	LD	HL,RDSIZE
+	CALL	A32OUT		;show read size
+	LD	HL,(ASC32)
+	LD	BC,'1'
+	OR	A
+	SBC	HL,BC
+	LD	DE,T_CMXR
+	JR	Z,SSRDSS
+	LD	DE,T_CMXS
+SSRDSS:	CALL	ZKOUT
+	LD	DE,(PRN_NM)
+	CALL	ZKOUT
+	LD	A,CR
+	CALL	COUT##
+	RET
+
+;#######################################################
+;### NPRINT START #######################################
+;#######################################################
+	;check for CP/M 2+
+BEGIN:	LD	C,CPMVER
+	CALL	BDOS
+	LD	(SYSVER),A	;CP/M version
+	AND	0F0H		;version 2+ required
+	CP	20H
+	LD	DE,CPMERR
+	CALL	C,ACTOUT
+	JP	C,NPQUIT
+	LD	A,(SYSVER)
+	CP	22H
+	JR	NZ,NLDTZD	;not CP/M 2.2
+	LD	C,CPMEXV
+	CALL	BDOS
+	LD	A,H
+	CP	'S'
+	JR	Z,LOADEC
+	CP	'D'
+	JR	NZ,NLDTZD
+LOADEC:	;ZSDOS/ZDDOS
+	PUSH	AF
+	LD	C,GTCFLG	;get config flags
+	CALL	BDOS
+	LD	(EXTCFG),HL
+	LD	E,07EH
+	LD	C,STBEMD	;set BDOS error-mode
+	CALL	BDOS		;(reseted in WBOOT!)
+	POP	AF
+	JR	LOADDV
+NLDTZD:	XOR	A		;not ZSDOS/ZDDOS
+LOADDV:	LD	(EXTVER),A	;extended CP/M version
+	LD	SP,STACK	;set local stack
+	CALL	PUTUD##		;save away DU:
+	CALL	RETUD##
+	LD	(CUR_DU),BC	;get current DU:
+	;parse and test ARG's
+	;
+	;because Network Hardware-Driver is not initialized
+	; here, do not call hardware-related API functions,
+	;    only functions for CONVERSION are allowed!
+	;
+	XOR	A
+	LD	(NPSTAT),A	;NPRINT-state
+	LD	(DTSTAT),A	;DATA-state
+	LD	HL,DMA+1	;1st Arg
+	JR	T_ARG
+T_ANX:	LD	A,(NPSTAT)
+	AND	3
+	JR	NZ,T_EXE	;-h|v and exit
+	LD	A,(ARGN)
+	CP	1
+	LD	DE,T_CMXE
+	JR	Z,M_QUIT	;no more arguments found
+	LD	HL,(TARG2)	;next Arg
+T_ARG:	LD	DE,ARGMAX	;ARG-Table
+	INC	A		;terminate Parameter with 0 
+	CALL	ARGV##		;parse ARG's
+	LD	A,(ARGN)
+	CP	1
+	LD	DE,T_CMXE
+	JR	C,M_QUIT	;no (more) arguments found
+	;test Arg 1
+	LD	HL,(TARG1)
+	LD	A,'-'
+	CP	(HL)
+	JR	NZ,T_SRV	;no option
+	INC	HL
+	LD	C,(HL)		;option char
+	INC	HL
+	;option:
+T_OST:	XOR	A
+	OR	C
+	JR	Z,T_ANX		;string end
+	EX	DE,HL
+	LD	HL,NPSTAT
+	AND	0DFH		;UCASE
+	CP	'H'		;help
+	JR	NZ,T_OST1
+	SET	0,(HL)
+T_OST1:	CP	'V'		;version
+	JR	NZ,T_OST2
+	SET	1,(HL)
+T_OST2:	CP	'R'		;reset bit 7
+	JR	NZ,T_OST3
+	SET	2,(HL)
+T_OST3:	CP	'G'		;german conv.
+	JR	NZ,T_OST4
+	SET	3,(HL)
+T_OST4:	EX	DE,HL
+	LD	C,(HL)		;next char
+	INC	HL
+	JR	T_OST		;next option
+M_QUIT:	CALL	ACTOUT		;activate (DE) message
+	JP	NRQUIT		;rquit
+T_SRV:	;server: HL=PTR to server[:port]
+	LD	(SRVPTR),HL	;save pointer
+;------ execute "-" option and exit --------------------
+T_EXE:	LD	A,(NPSTAT)	;state
+	BIT	0,A
+	LD	DE,NPHELP
+	JR	NZ,M_QUIT	;activate Help and exit
+	BIT	1,A
+	CALL	NZ,NPVER	;show Version
+	JP	NZ,NRQUIT	;and exit
+;-------init and test Network --------------------------
+	;try Network init
+	XOR	A		;DRV->KOP (required only for KC85)
+	CALL	N_INIT
+	CALL	C,ZKOUT		;->DE=ERR-string
+	CALL	C,NEWLN
+	LD	DE,NPVER2
+	JR	C,M_QUIT	;activate "-h" and exit
+	;network available
+	CALL	NETTST		;configured?
+	JR	C,M_QUIT
+	CALL	ONTEST		;online?
+	JR	C,M_QUIT
+;------ try to allocate all TPA-buffers ----------------
+	XOR	A		;full TPA
+	CALL	IALLOC##
+	LD	DE,256		;domain name length
+	CALL	ALLOC##
+	LD	DE,T_CMXD	;no TPA
+	JR	Z,M_QUIT
+	LD	(P_NBUF),HL	;set address
+	LD	DE,MAXMTU	;network data length
+	CALL	ALLOC##
+	LD	DE,T_CMXD	;no TPA
+	JR	Z,M_QUIT
+	LD	(P_DBUF),HL	;set address
+	LD	DE,MAXSEG	;tcp data length
+	CALL	ALLOC##
+	LD	DE,T_CMXD	;no TPA
+	JR	Z,M_QUIT
+	LD	(P_RBUF),HL	;set address
+	LD	DE,PRFREC*128	;printer file data buffer
+	CALL	ALLOC##
+	LD	DE,T_CMXD	;no TPA
+	JR	Z,M_QUIT
+	LD	(PRFBUF),HL
+;------	execute server arg -----------------------------
+	LD	HL,(SRVPTR)	;NAME|IP:PORT
+	CALL	MKHOST		; -> socket
+	JP	C,NRQUIT	;rquit with Err Msg
+	;connect
+	LD	A,0FFH		;any
+	LD	D,SK_STREAM	;Mode
+	LD	E,SO_NDACK	;Flags
+	CALL	SOCKET
+	LD	DE,T_CMXB	;socket-error
+	JP	C,M_QUIT
+	LD	(PR_SCK),A
+	LD	DE,T_CMXG	;'Connect to '
+	CALL	ZKOUT
+	LD	DE,(SRVPTR)	;server string cmdline
+	CALL	ZKOUT
+	LD	DE,T_CMXV	;' ... '
+	CALL	ZKOUT
+	LD	HL,P_PEER
+	CALL	CONNECT
+	JR	NC,P_PRNM	;OK
+	LD	E,SL_STAT	;get socket state
+	CALL	SELECT
+	LD	A,S_CLOSED
+	CP	E
+	LD	HL,T_CMXC	;connect Err
+	JR	NZ,P_SCEM
+	LD	HL,T_CMXF	;timeout Err
+P_SCEM:	EX	DE,HL
+	CALL	ACTOUT
+	JP	NPCRQT		;close and exit
+P_PRNM:	;connected
+	LD	HL,DTSTAT
+	SET	7,(HL)		;TCP conn. established
+	LD	DE,T_CMXH	;'connected !'
+	CALL	ZKOUT
+	LD	A,(ARGN)
+	CP	1
+	JP	Z,NPCRQT	;no more arguments found
+	CALL	NEWLN
+;------ Main Loop: execute data arg's ------------------
+NPLPRS:	;reset data buffer
+	LD	HL,(P_DBUF)
+	LD	(P_DPTR),HL
+	LD	HL,0
+	LD	(P_DSIZ),HL
+	LD	HL,DTSTAT
+	RES	0,(HL)
+NPLOOP:	;test open printer file
+	LD	HL,DTSTAT
+	BIT	2,(HL)
+	JP	NZ,NPLPF6	;read on
+	;test next arg
+	LD	HL,(TARG2)
+	LD	DE,ARGMAX	;ARG-Table
+	INC	A		;terminate Parameter with 0 
+	CALL	ARGV##		;parse ARG's
+	;search for "."
+	LD	HL,(TARG1)
+	PUSH	HL		;search for "." in arg
+	LD	BC,0
+NPLOO1:	LD	A,(HL)
+	INC	HL
+	AND	07FH
+	CP	'.'
+	JR	NZ,NPLOO2
+	INC	C		;count "."
+NPLOO2:	INC	B		;count length
+	OR	A		;string end ?
+	JR	NZ,NPLOO1	;no
+	DEC	B		;char length
+	POP	HL
+	OR	C
+	JP	Z,NPLPCD	;"." not found
+	DEC	B
+	JP	Z,NPLPCD	;"." as ASCII code found
+;------ printer file ------
+NPLPFL:	LD	BC,(CUR_DU)
+	LD	(PRN_DU),BC	;reset DU:
+	PUSH	HL
+	LD	C,0
+NPLPF1:	LD	A,(HL)
+	INC	HL
+	AND	07FH
+	CP	':'
+	JR	NZ,NPLPF2
+	INC	C		;count ":"
+NPLPF2:	OR	A		;string end ?
+	JR	NZ,NPLPF1	;no
+	POP	HL
+	OR	C
+	JR	Z,NPLPF4	;no DIR|DU
+	CALL	TSTDIR
+	JR	NC,NPLPF3
+	LD	BC,(CUR_DU)	;current DU:
+	CALL	TSTDRU
+	LD	DE,T_CMXL	;syntax Err DU:
+	JP	C,NPLPF8
+NPLPF3:	LD	(PRN_DU),BC	;new DU:
+	CALL	TDUEND
+	CP	':'
+	JP	NZ,NPLPF9	;no FN.FT
+	INC	HL
+NPLPF4:	;init FCB
+	LD	DE,PRFFCB
+	PUSH	HL
+	CALL	GETFCB
+	POP	HL
+	LD	DE,T_CMXM	;invalid FN.FT
+	JR	C,NPLPCE
+	;login DU:
+	LD	BC,(PRN_DU)
+	CALL	LOGTST
+	;open FN.FT
+	LD	DE,PRFCTL
+	CALL	FXI$OPEN##
+	JR	NZ,NPLPF5
+	LD	DE,T_CMXN	;Err open printer file
+NPLPCE:	LD	A,(DTSTAT)
+	BIT	1,A		;Code output line opened?
+	RES	1,A		;close
+	LD	(DTSTAT),A
+	CALL	NZ,NEWLN	;yes -> new line
+	CALL	ZKOUT
+	EX	DE,HL
+	CALL	ZKOUT
+	LD	DE,T_CMXO
+	JR	NPLPF8
+NPLPF5:	LD	(PRN_NM),HL
+	LD	HL,DTSTAT
+	SET	2,(HL)		;printer file opened
+NPLPF6:	;read filedata
+	LD	DE,PRFCTL
+	CALL	FX$GET##
+	JR	NZ,NPLPF7	;OK
+	LD	DE,PRFCTL	;EOF
+	CALL	FXI$CLOSE##	;-> close
+	LD	HL,DTSTAT
+	RES	2,(HL)		;printer file closed
+	LD	BC,(RDBCNT)
+	LD	B,0
+	CALL	SSRDSZ		;save+show read size
+	LD	B,5
+	LD	HL,RDBCNT
+CLRDSZ:	LD	(HL),0		;clear read counter + size
+	INC	HL
+	DJNZ	CLRDSZ
+	CALL	NEWLN
+	JR	NPLPF9
+NPLPF7:	LD	HL,NPSTAT
+	BIT	2,(HL)
+	JR	Z,SKPRB7
+	AND	07FH		;reset bit 7
+SKPRB7:	BIT	3,(HL)
+	JR	Z,SKPGCV
+	LD	BC,7		;german conversion
+	LD	HL,FRGCV
+	LD	DE,TOGCV
+CPAGCV:	CPI
+	JR	Z,RPAGCV
+	INC	DE
+	JP	PE,CPAGCV	;continue
+	JR	SKPGCV		;<>
+FRGCV:	DB	91,92,93,123,124,125,126
+TOGCV:	DB	142,153,154,132,148,129,225
+RPAGCV:	LD	A,(DE)		;convert A
+SKPGCV:	LD	HL,RDBCNT
+	INC	(HL)
+	JR	NZ,P_PRWD
+	PUSH	AF
+	LD	BC,256
+	CALL	SSRDSZ		;save+show read size
+	POP	AF
+	JR	P_PRWD
+NPLPF8:	;Err
+	CALL	ZKOUT
+	CALL	NEWLN
+NPLPF9:	;continue
+	JP	P_PRST
+;------ printer code ------
+	;search for printer code
+NPLPCD:	LD	DE,NPCTAB
+	LD	BC,0		;B: NPCTAB offset / C: NPCODE offset
+NPLPC1:	PUSH	DE
+	LD	B,1		;entry length + 0 in NPCTAB for compare
+NPLPC2:	LD	A,(DE)
+	OR	A
+	JR	Z,NPLPC3
+	INC	DE
+	INC	B
+	JR	NPLPC2
+NPLPC3:	POP	DE
+	CALL	COMPB##
+	JR	Z,NPLPC5	;textcode found
+	INC	C		;next entry in NPCODE
+	LD	A,B
+	ADD	A,E
+	LD	E,A
+	LD	A,D
+	ADC	A,0
+	LD	D,A		;next entry in NPCTAB
+	LD	A,(DE)
+	OR	A		;end of code table?
+	JR	NZ,NPLPC1	;no -> continue search
+	;test for ASCII code
+	INC	HL
+	OR	(HL)
+	DEC	HL
+	JR	NZ,NPLPC4
+	LD	A,(HL)		;A: ASCII code
+	LD	DE,T_CMXW	;Err ASCII code
+	CP	21H		; < '!'	
+	JP	C,NPLPCE
+	CP	7FH		; > '~'	
+	JP	NC,NPLPCE
+	JR	NPLPC6
+NPLPC4:	;test for decimal code
+	PUSH	HL
+	LD	B,H
+	LD	C,L
+	CALL	EVAL10##	;A: 8 bit dec. value
+	OR	A
+	SBC	HL,BC
+	POP	HL
+	LD	DE,T_CMXP	;Err decimal code
+	JP	Z,NPLPCE	;1st char <- no conversion
+	JR	NPLPC6
+NPLPC5:	PUSH	HL
+	LD	HL,NPCODE
+	LD	B,0
+	ADD	HL,BC
+	LD	A,(HL)		;A: found printer code
+	POP	HL
+NPLPC6:	PUSH	AF		;show sent code
+	EX	DE,HL
+	LD	HL,DTSTAT
+	BIT	1,(HL)		;Code output line opened?
+	SET	1,(HL)		;open
+	EX	DE,HL
+	LD	DE,T_CMXX
+	CALL	Z,ZKOUT		;no -> head text out
+	LD	A,' '
+	CALL	COUT##
+	POP	AF
+	CALL	PAFDC##		;dec. code out
+;------ write (A) to send data ------
+P_PRWD:	LD	HL,(P_DPTR)
+	LD	(HL),A
+	INC	HL
+	LD	(P_DPTR),HL
+	LD	HL,(P_DSIZ)
+	INC	HL
+	LD	(P_DSIZ),HL
+	LD	HL,DTSTAT
+	SET	0,(HL)		;send data pending
+;------ check keyboard and socket state ------
+P_PRST:	CALL	CST##		;CON ?
+	JR	NZ,P_PRCN	;no Input
+	CALL	CONDIN##	;get CHR (+NL)
+	;check break
+	CP	ETX
+	JR	Z,P_PRBK
+	CP	ESC
+	JR	NZ,P_PRCN
+P_PRBK:	;terminated by user
+	LD	DE,T_CMXI	
+	CALL	ZKOUT
+	JP	NPCRQT		;exit
+P_PRCN:	;data received?
+	LD	A,(PR_SCK)
+	LD	E,SL_RECV
+	CALL	SELECT
+	CALL	NC,PRDATA	;-> print to CON
+	;check socket State
+	LD	A,(PR_SCK)
+	LD	E,SL_STAT	;State
+	CALL	SELECT
+	LD	A,S_CLSWAIT
+	CP	E
+	JR	Z,P_PRNC
+	LD	A,S_CLOSED
+	CP	E
+	JR	NZ,P_PRSD
+P_PRNC:	;'server disconnected unexpectedly'
+	LD	DE,T_CMXJ
+	CALL	ZKOUT
+	JR	NPCRQT		;exit
+;------ send data ------
+P_PRSD:	LD	DE,NPLOOP	;-> loop
+	LD	HL,DTSTAT
+	BIT	0,(HL)
+	JR	Z,P_PRSE	;no data
+	LD	HL,(P_DSIZ)
+	LD	BC,MAXSEG
+	OR	A
+	SBC	HL,BC
+	JR	NZ,P_PRSE	;wait
+P_PRSI:	LD	A,(PR_SCK)
+	LD	HL,(P_DBUF)
+	LD	BC,(P_DSIZ)
+	CALL	SEND
+	LD	IX,SDSIZE
+	CALL	SVSIZE		;save send size +(BC)
+	LD	DE,NPLPRS	;-> reset+loop
+	JR	NC,P_PRSE
+	LD	DE,T_CMXQ
+	CALL	ZKOUT
+	JR	NPCRQT		;exit
+P_PRSE:	LD	HL,DTSTAT
+	BIT	2,(HL)		;printer file open?
+	JR	NZ,P_PRCL	;yes -> read on
+	;test arg's
+	LD	A,(ARGN)
+	CP	1
+	JR	Z,P_PRFD	;last arg done
+P_PRCL:	;continue loop
+	EX	DE,HL
+	JP	(HL)
+P_PRFD:	;exit loop
+	LD	HL,DTSTAT
+	BIT	0,(HL)		;pending send data?
+	RES	0,(HL)		;ack subsequent sending
+	JR	NZ,P_PRSI	;yes -> send before exit
+	BIT	1,(HL)		;Code output line opened?
+	RES	1,(HL)		;close
+	CALL	NZ,NEWLN	;yes -> new line
+	LD	HL,SDSIZE
+	CALL	A32OUT		;show send size
+	LD	HL,(ASC32)
+	LD	BC,'1'
+	OR	A
+	SBC	HL,BC
+	LD	DE,T_CMXT
+	JR	Z,P_PRFS
+	LD	DE,T_CMXU
+P_PRFS:	CALL	ZKOUT
+;-------------------------------------------------------
+NPCRQT:	;close and restore quit
+	CALL	NEWLN
+	LD	HL,DTSTAT
+	BIT	7,(HL)		;online?
+	JR	Z,NPCRQ1
+	;close open connection
+	LD	A,(PR_SCK)
+	CALL	SHUTDN		;yes->close
+	LD	DE,T_CMXK	;'connection closed'
+	CALL	ZKOUT
+NPCRQ1:	;close open file and release socket
+	LD	HL,DTSTAT
+	BIT	2,(HL)		;pfile open?
+	JR	Z,NPCRQ2
+	LD	BC,(PRN_DU)
+	CALL	LOGTST
+	LD	DE,PRFCTL
+	CALL	FXI$CLOSE##	;yes->close
+NPCRQ2:	LD	HL,PR_SCK
+	LD	A,(HL)		;get handle
+	INC	(HL)		;allocated?
+	CALL	NZ,CLOSE	;yes->release socket
+NRQUIT:	;restore quit
+	CALL	GETUD##		;restore DU:
+NPQUIT:	;quit
+	CALL	MSGOUT		;pending message to CON:
+	LD	A,0C9H
+	LD	(SNOGO),A	;suppress go
+	LD	C,0		;go to CP/M
+	CALL	BDOS		;don't JUMP (gives an 
+				;Error with Z-System)
+;****** local Stack ************************************
+	DS	128,0		;depth = 64
+STACK	EQU	$
+;*******************************************************
+EEMAIN	EQU	$		;last ADR main program
+;****** Code-End ***************************************
+
+IF2        
+	.PRINTX "NPRINTxx.COM"
+	.RADIX  16
+        PRMSG   <KCN-DRV LENGTH:>,%(AAMAIN-103H)
+        PRMSG   <    MAIN BEGIN:>,%AAMAIN
+        PRMSG   <   MAIN LENGTH:>,%(EEMAIN-AAMAIN)
+        PRMSG   <  LAST ADDRESS:>,%EEMAIN
+        PRMSG   <PROGRAM LENGTH:>,%(EEMAIN-100H)
+	.RADIX  10
+ENDIF
+	.DEPHASE
+	END

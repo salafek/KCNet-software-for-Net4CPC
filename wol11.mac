@@ -1,0 +1,1261 @@
+;*******************************************************
+;
+;	 "KCNet" WAKE ON LAN CLIENT CP/M 2+ 
+;
+;		###     KCNET     ###
+;		 WIZnet TCP/IP-Stack 
+;		###  susowa 2008  ###
+;
+;  Name		: WOLxx.MAC
+;  Date		: 10.11.2009
+;  Modified	: 25.02.2012
+;		: 21.11.2022 d_kef
+;  Hardware	: Net4CPC - W5100S
+;
+;  extern       : SYSLIB.REL
+;
+;  Includes:
+;     KCNET.INC - Configuration
+;   N4C-W51.INC - Interface driver Net4CPC W5100S
+;  W5100-12.INC - TCP/IP and Socket driver
+;
+;*******************************************************
+
+;*** WOL-VERSION ***************************************
+V_MAJOR	EQU	1
+V_MINOR	EQU	1
+;*** MACROS ********************************************
+NO	EQU	0
+YES	EQU	NOT NO
+	;
+PRMSG   MACRO   MSG,N       
+	.PRINTX *MSG,N*
+	ENDM
+	;
+INPUT	MACRO
+	CALL	CAPIN##	;capitalized CHR input
+	ENDM
+;*** common Equations **********************************
+	;destination
+        .PHASE  00100H
+	;CPU
+	.Z80
+	;CP/M 2+ constants
+BDOS	EQU	5
+DMA     EQU	80H
+	;BDOS
+CPMVER	EQU	12		;get CP/M-Version
+;*******************************************************
+
+;*** Start of Code *************************************
+	;start address
+	JP	BEGIN
+	;ZCPR
+	DB	'Z3ENV'
+	DB	1		;type 1
+Z3EPTR:	DW	0		;pointer
+	;"KCNet" files
+	INCLUDE	KCNET.INC	;config file
+;
+	CKMAC	EQU	NO
+	INCLUDE	N4C-W51.INC	;Net4CPC - W5100S routines
+;
+	INCLUDE	W5100-12.INC	;TCP/IP+Socket-Driver
+;
+	;first address main
+AAMAIN	EQU	$
+;*******************************************************
+
+;### WOL DEFINITIONS ###################################
+;--- account structure in buffer ---
+A_CNUM	EQU	0		;acc. # (bin)
+A_CNAM	EQU	A_CNUM+1	;name+0 (ascii)
+A_CMAC	EQU	A_CNAM+16	;MAC (bin)
+A_CIP	EQU	A_CMAC+6	;IP (bin)
+A_CMSK	EQU	A_CIP+4		;MASK (bin)
+A_CEND	EQU	A_CMSK+4
+	;
+A_CLGT	EQU	A_CEND-A_CNUM	;length
+;#######################################################
+
+;*** Work RAM ******************************************
+BSSTAM:	DB	0		;screen state (KC85)
+COLCNT:	DW	0000H		;slash|colon counter
+	;WOL packet buffer
+WLPCKB	EQU	$		;begin
+	;
+	DS	6,0FFH		;sync stream
+WLPCKM:	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	DS	6,0		;destination MAC	
+	;
+WLPCKL	EQU	$-WLPCKB	;length
+	;
+	;WOL-State
+WLSTAT:	DB	0	;Bit=1:
+			;7 - WOL.INI opened
+			;6 - 
+			;5 - 
+			;4 - Name cmdline ON
+			;3 - MAC cmdline ON
+			;2 - Full output ON
+			;1 - Show Version ON
+			;0 - Show Help ON
+	;acc. buffer local/cmdline/account values for account structure
+W_NAME:	DS	16,0		;account name (cmdline or WOL.INI)
+W_MAC:	DB	0,0,0,0,0,0	;MAC (cmdline or WOL.INI)
+W_IP:	DB	0,0,0,0		;ip (local,cmdline or WOL.INI)
+W_MASK:	DB	0,0,0,0		;mask (local,cmdline or WOL.INI)
+W_BFLG	EQU	$-W_NAME	;buffer length
+	;
+W_SCK:	DB	0FFH		;socket-handle
+W_PEER:	DB	0,0,0,0		;Directed Broadcast address
+	DB	0,9		;"discard" port
+W_TNAM:	DS	16,0		;name from cmdline for acc. test
+ACICNT:	DB	0		;account InCounter
+A_CBUF:	DW	0000H		;address of account buffer
+ACCCNT:	DB	0		;current account # (1-9)
+ACCPTR:	DW	0000H		;current account pointer
+	;control buffer for WOL.INI
+WLI_DU:	DW	0		;WOL.INI DU: (low=U)
+	;
+WLICTL:	DB	WLIREC		;used # of records
+	DS	7,0		;filled in by FYIO
+WLIBUF:	DW	0000H		;working file buffer
+WLIFCB:	DB	0		;filled in by FYIO to 0
+	DB	'WOL     '	;file Name
+	DB	'INI'		;file Type
+	DS	24,0		;filled in by FYIO
+	;
+WLIREC	EQU	8		;declare # of records (128 byte)
+	;Table for ARGV## - addresses
+ARGMAX:	DB	9		;max. 9 Arguments
+ARGN:	DB	0		;Number of Arguments found
+TARG1:	DW	0		;ADR ARG1
+TARG2:	DW	0		;ADR ARG2
+TARG3:	DW	0		;ADR ARG3
+TARG4:	DW	0		;ADR ARG4
+TARG5:	DW	0		;ADR ARG5
+TARG6:	DW	0		;ADR ARG6
+TARG7:	DW	0		;ADR ARG7
+TARG8:	DW	0		;ADR ARG8
+TARG9:	DW	0		;ADR ARG9
+	;
+TEMP:	DS	10,0		;temp. buffer
+;
+SYSVER:	DB	0		;CP/M-Version
+;
+	;SYS-Error
+CPMERR:	DB	CR,'CP/M-Version 2+ required !',BEEP,CR,LF,'$'
+	;Start Error's
+W_CMXA:	DB	'Too many arguments !',BEEP,'$'
+W_CMXB:	DB	'No socket available !',BEEP,'$'
+W_CMXC:	DB	'Cannot open socket !',BEEP,'$'
+W_CMXD:	DB	'More TPA required !',BEEP,'$'
+W_CMXE:	DB	'WOL.INI not found (show help with -h) !',BEEP,'$'
+W_CMXF:	DB	'No accounts found in WOL.INI !',BEEP,'$'
+W_CMXG:	DB	'Account ','$'
+W_CMXH:	DB	' not found in WOL.INI !',BEEP,'$'
+	;Output messages
+WL_HDR:	DB	' ### Account List ###',CR,LF,'$'
+WL_MOR:	DB	' >M< .. more accounts',CR,LF,'$'
+WL_FTR:	DB	' Select account number key: ','$'
+WL_SND:	DB	' Send WOL packet ','$'
+WL_SER:	DB	' Error!',BEEP,'$'
+WL_SOK:	DB	' OK.','$'
+	;WOL-Usage
+WL_HLP:	DB	'wol [-h|v] [-f] [[DIR|DU:]name]|[destination-MAC [network/mask]]',CR,LF
+	DB	LF
+	DB	'  Options:',CR,LF
+	DB	'   -h|v - show help or version and exit',CR,LF
+	DB	'     -f - Full Output',CR,LF
+	DB	'Parameter:',CR,LF
+	DB	'   name - Destination name defined in [DIR|DU:]WOL.INI',CR,LF
+	DB	'    MAC - ":"-delimited destination MAC address (hex.)',CR,LF
+	DB	'network - Network address, if MAC is not in local net (d.d.d.d)',CR,LF
+	DB	'   mask - Subnet mask of the other network (d.d.d.d)',CR,LF
+	DB	LF
+	DB	'   Wake-On-LAN  allows  a  computer to be turned on or',CR,LF
+	DB	'   woken up by a network message platform-independent.'
+	DB	'$'
+	;WOL-Version
+WLVER1:	DB	'###    WakeOnLan Client CP/M 2+     ###',CR,LF
+	DB	'             Version ',V_MAJOR+'0','.',V_MINOR+'0',CR,LF
+	DB	'         "KCNet TCP/IP-Stack"',CR,LF
+	DB	'### copyright 2009-2011 by >susowa< ###',CR,LF
+	DB	LF,'$'
+WLVER2:	DB	CR,LF
+	DB	'           Show Help with -h','$'
+	;
+;### common SUB-programs ###############################
+	;clear RAM
+CLRMEM:	LD	(HL),0
+	LD	D,H
+	LD	E,L
+	INC	DE
+	DEC	BC
+	LDIR
+	RET
+	;CR+LF Out
+NEWLN:	PUSH	AF
+	LD	A,CR
+	CALL	COUT##
+	LD	A,LF
+	CALL	COUT##
+	POP	AF
+	RET
+	;(DE)-string+0/'$' Out
+ZKOUT:	PUSH	AF
+ZKOU1:	LD	A,(DE)
+	INC	DE
+	AND	A
+	JR	Z,ZKOU2
+	CP	'$'
+	JR	Z,ZKOU2
+;	CALL	COUT##
+	CALL	BDCOUT		;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	JR	ZKOU1
+ZKOU2:	POP	AF
+	RET
+	;(HL) IP-Address to CON Out
+IPOUT:	PUSH	AF
+	PUSH	DE
+	PUSH	BC
+	LD	DE,TEMP
+	CALL	I_NTOA		;convert
+	CALL	ZKOUT		;Out
+	LD	DE,4
+	ADD	HL,DE
+	POP	BC
+	POP	DE
+	POP	AF
+	RET
+	;(HL) MAC-Address to CON Out
+MACOUT:	PUSH	AF
+	PUSH	BC
+	LD	B,6		;6*HEX
+	JR	MCOUTI
+MCOUTC:	LD	A,':'
+	CALL	COUT##
+MCOUTI:	LD	A,(HL)
+	CALL	PA2HC##		;A-HEX CON Out
+	INC	HL
+	DJNZ	MCOUTC
+	POP	BC
+	POP	AF
+	RET
+	;show Version
+WL_VER:	PUSH	AF
+	LD	DE,WLVER1
+	CALL	ZKOUT
+	LD	DE,N_DLBL	;IF-driver label
+	CALL	ZKOUT
+	LD	DE,WLVER2
+	CALL	ZKOUT
+	POP	AF
+	RET
+	;compare A-(HL) 4/6 Byte
+CPA4BT:	LD	BC,4	
+	JR	CPABTL
+CPA6BT:	LD	BC,6
+CPABTL:	CPI
+	RET	NZ
+	JP	PE,CPABTL
+	RET			;Z=1 same
+	;count & get ARG-PTR
+CNTARG:	LD	HL,ARGN
+	DEC	(HL)
+	RET	Z
+GETARG:	;get+next ARG
+	LD	HL,(TEMP)
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	INC	HL
+	LD	(TEMP),HL	;save next ARG-PTR
+	EX	DE,HL		;HL: address ARG
+	RET
+	;clear value buffer
+CLRVAL:	LD	HL,W_NAME
+	LD	BC,W_BFLG
+	CALL	CLRMEM
+	RET
+	;load new DIR: and inc. PTR
+TSTDIR:	LD	DE,(Z3EPTR)
+	LD	A,D
+	OR	E
+	SCF
+	RET	Z		;no ZCPR
+	PUSH	HL		;save PTR
+	LD	HL,21
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)		;address of first NDIR
+	INC	HL
+	LD	A,(HL)		;counter
+	POP	HL
+	OR	A		;entries ?
+	SCF
+	RET	Z		;no
+	PUSH	HL		;save PTR
+	LD	B,A
+TSTDI1:	LD	A,(DE)		;NDIR
+	OR	A
+	JR	Z,TDUERR	;no more entries
+	PUSH	BC
+	LD	B,A		;Drive
+	DEC	B		;0... for LOGUD## !
+	INC	DE
+	LD	A,(DE)
+	LD	C,A		;User
+	INC	DE
+	PUSH	HL		;DIR
+	PUSH	DE		;NDIR
+	PUSH	BC		;save DU:
+	LD	B,8
+TSTDI2:	LD	A,(DE)
+	CP	' '
+	JR	Z,TSTDI3	;end of NDIR
+	LD	C,A
+	LD	A,(HL)
+	CALL	CAPS##		;ucase
+	CP	C
+	JR	NZ,TSTDI4 	;DIR<>NDIR
+	INC	HL
+	INC	DE
+	DJNZ	TSTDI2
+TSTDI3:	CALL	TDUEND		;end of DIR ?
+TSTDI4:	POP	BC
+	POP	DE
+	JR	NZ,TSTDI5
+	;DIR=NDIR
+	POP	DE		;retain HL = end of DIR !
+	POP	DE		;retain BC = DU !
+	JR	TDUSOK
+TSTDI5:	POP	HL
+	EX	DE,HL
+	LD	BC,16
+	ADD	HL,BC
+	EX	DE,HL		;DE=next NDIR
+	POP	BC
+	DJNZ	TSTDI1
+	JR	TDUERR		;no more entries
+	;load new DU: and inc. PTR
+TSTDRU:	PUSH	HL
+	LD	BC,(WLI_DU)
+	LD	A,(HL)
+	CALL	ISALPHA##
+	JR	Z,TDDRIV	;A-Z
+	CALL	ISDIGIT##
+	JR	Z,TDUSER	;0-9
+TDUERR:	POP	HL		;reset HL !
+	LD	DE,TSTDUT
+	SCF
+	RET
+TDUEND:	LD	A,(HL)
+	OR	A
+	RET	Z
+	CP	':'
+	RET
+TDDRIV:	AND	05FH		;UCASE
+	SUB	'A'		;new Drive
+	CP	'P'-'A'+1
+	JR	NC,TDUERR
+	LD	B,A
+	INC	HL
+	CALL	TDUEND
+	JR	Z,TDUSOK
+	CALL	ISDIGIT##
+	JR	NZ,TDUERR
+TDUSER:	CALL	EVAL10##	;new USER
+	CALL	TDUEND
+	JR	NZ,TDUERR
+	LD	A,E
+	CP	32
+	JR	NC,TDUERR
+	LD	C,A
+	CCF			;CY=0!
+TDUSOK:	POP	DE		;retain HL !
+	LD	(WLI_DU),BC	;load DU:
+	INC	HL		;PTR for 'name'
+	RET
+TSTDUT: DB	'invalid value for DIR|DU: !',CR,LF,'$'
+	;convert 2 ASCII hex to bin
+CHEX:	LD	C,2	
+CHEX1:	LD	A,(DE)
+	SUB	'0'
+	RET	C
+	CP	10
+	JR	C,CHEX2
+	SUB	7
+	AND	0DFH	;uppercase
+	CP	10
+	RET	C
+	CP	10H
+	CCF
+	RET	C
+CHEX2:	RLD		;shift in (HL) 
+	INC	DE
+	DEC	C
+	JR	NZ,CHEX1
+	OR	A
+	RET
+	;MAC string to bin
+	;PI:	HL - address of MAC bin (6 Byte)
+	;	DE - address of MAC string+0 (":" delimited)
+	;PO:  CY=1 - Error (only 0-9,A-F and : allowed)
+I_MAC:	PUSH	HL
+	PUSH	DE
+	PUSH	BC
+	LD	B,6		;6 NUM's
+	JR	I_MAC2
+I_MAC1:	LD	A,(DE)
+	INC	DE
+	INC	HL
+	CP	':'
+	SCF
+	JR	NZ,I_MAC3	;String-ERR	
+I_MAC2:	CALL	CHEX		;conv. 1 NUM to (HL)
+	JR	C,I_MAC3	;ERR
+	DJNZ	I_MAC1
+I_MAC3:	POP	BC
+	POP	DE
+	POP	HL
+	RET
+	;parse MAC-string
+	;PI:    HL - address of MAC-zstring
+	;PO: W_MAC - valid bin MAC
+	;   if ERR - CY=1 & DE=address err-string & HL=unchanged
+PRSMAC:	EX	DE,HL
+	LD	HL,TEMP+2
+	CALL	I_MAC		;(DE)STRING->(HL)MAC bin
+	EX	DE,HL		;restore HL
+	LD	DE,TSTMAT	;ERR-string
+	RET	C		;conv.-ERR
+	LD	HL,TEMP+2
+	LD	DE,W_MAC
+	LD	BC,6
+	LDIR			;copy MAC
+	RET
+TSTMAT:	DB	'invalid value for destination-MAC !',CR,LF,'$'
+	;parse net-string
+	;PI:          HL - address of net-zstring
+	;PO: W_IP+W_MASK - valid bin net
+	;         if ERR - CY=1 & DE=address err-string & HL=unchanged
+PRSNET:	PUSH	HL
+TSTIPS:	LD	A,(HL)
+	INC	HL
+	CP	'/'
+	JR	Z,TSTIPC	;net found
+	OR	A		;string end ?
+	SCF
+	JR	NZ,TSTIPS	;no
+TSTIPC:	POP	HL
+	LD	DE,TSTNTT
+	RET	C
+	EX	DE,HL
+	LD	HL,TEMP+2
+	CALL	I_ADDR		;(DE)STRING->(HL)IP
+	EX	DE,HL		;restore HL
+	LD	DE,TSTIPT
+	RET	C
+	PUSH	HL
+TSTMSK:	LD	A,(HL)
+	CP	'/'
+	INC	HL
+	JR	NZ,TSTMSK	;search mask
+	EX	DE,HL
+	LD	HL,TEMP+2+4
+	CALL	I_ADDR		;(DE)STRING->(HL)MASK
+	POP	HL		;restore HL
+	LD	DE,TSTMST
+	RET	C
+	LD	HL,TEMP+2
+	LD	DE,W_IP
+	LD	BC,8		;copy ip/mask and overwrite
+	LDIR			;local network settings !	
+	RET
+TSTNTT:	DB	'invalid value for network !',CR,LF,'$'
+TSTIPT:	DB	'invalid value for ip-address !',CR,LF,'$'
+TSTMST:	DB	'invalid value for subnet mask !',CR,LF,'$'
+	;parse name-string
+	;PI:     HL - address of name-zstring
+	;PO: W_NAME - valid acc. name string+0
+	;   if ERR - CY=1 & DE=address err-string & HL=unchanged
+PRSNAM:	PUSH	HL
+	LD	BC,00F00H	;max. length of name/counter
+	LD	DE,W_NAME
+TSTNAC:	LD	A,(HL)
+	AND	07FH		;clear bit 7
+	OR	A
+	JR	Z,TSTNAD	;string end
+	CALL	ISALNUM##
+	JR	Z,TSTNAO	;A-Z/a-z/0-9
+	CP	'-'
+	JR	Z,TSTNAO	;'-'
+	LD	C,0		;clear counter
+	JR	TSTNAD
+TSTNAO:	CP	'a'
+	JR	C,TSTNAL
+	AND	5FH		;uppercase 
+TSTNAL:	LD	(DE),A
+	INC	HL
+	INC	DE
+	INC	C
+	DJNZ	TSTNAC
+TSTNAD:	POP	HL		;restore
+	LD	DE,TSTNAT
+	INC	C
+	DEC	C
+	SCF
+	RET	Z		;no chr's found
+	CCF
+	RET
+TSTNAT:	DB	'invalid name, only "A-Z", "0-9", "-" allowed !',CR,LF,'$'
+	;Online-Test with ERR-Message to CON
+	;PO:	CY=1 offline
+ONTEST:	CALL	N_LSTA		;LINK STATE
+	XOR	A
+	OR	E		;OK?
+	LD	DE,NONTXT
+	JR	NETTSE
+NONTXT:	DB	'network-cable not connected !',BEEP,'$'
+	;Network-Test with ERR-Message to CON
+	;PO:	CY=1 not configured
+NETTST:	LD	HL,W_IP		;local network (load W_IP/W_MASK)
+	PUSH	HL
+	CALL	N_GLIP		;read IP
+	CALL	N_GLMA		;read MASK
+	XOR	A
+	LD	DE,NKNTXT
+	POP	HL
+	CALL	CPA4BT		;IP 4*000 ?
+	JR	Z,NETTSE	;not conf.
+	CALL	CPA4BT		;SNM 4*000 ?
+NETTSE:	CALL	Z,ZKOUT
+	SCF			;Error
+	RET	Z		;not conf./offline
+	CCF			;OK
+	RET
+NKNTXT:	DB	'network not configured !',BEEP,'$'
+;### account sub's WOL.INI #############################
+	;length of BUF = max. key read length
+ACCBUF: DB	'         '
+ACCBLG	EQU	$-ACCBUF
+ACCNAM:	DB	ACCNAE-$-1,'[ACCOUNT]'
+ACCNAE	EQU	$
+	;length of BUF = max. param. value read length
+PARBUF:	DB	'xxx.xxx.xxx.xxx/xxx.xxx.xxx.xxx',0
+PARBLG	EQU	$-PARBUF-1
+ACPNAM:	DB	ACPNAE-$-1,'NAME='
+ACPNAE	EQU	$
+ACPMAC:	DB	ACPMAE-$-1,'MAC='
+ACPMAE	EQU	$
+ACPNET:	DB	ACPNEE-$-1,'NET='
+ACPNEE	EQU	$
+ACLOAD:	;load 1 valid account from WOL.INI to values
+	CALL	CLRVAL		;clear value buffer
+	LD	DE,WLICTL
+ACLONX:	CALL	TSTLNE
+	RET	C		;EOF
+	JR	Z,ACLONX	;EOL
+	AND	7FH
+	CP	' '+1
+	JR	C,SKIPLN	;CTRL/SPC
+	CP	';'
+	JR	Z,SKIPLN
+	CP	'['
+	JR	Z,FNDACC	;key start found
+SKIPLN:	CALL	SKIPEN
+	RET	C		;EOF
+	JR	ACLONX
+FNDACC:	PUSH	IY
+	CALL	FY$UNGET##	;return last char
+	POP	IY
+	LD	B,ACCBLG
+	LD	HL,ACCBUF
+FNDACN:	CALL	TSTLNE
+	RET	C		;EOF
+	JR	Z,ACLONX	;EOL
+	AND	7FH
+	CALL	ISALPHA##	;A-Z or a-z?
+	JR	NZ,FNDACL	;no
+	AND	5FH		;uppercase
+FNDACL:	LD	(HL),A
+	INC	HL
+	CP	']'
+	JR	Z,TSTACC	;key stop found
+	DJNZ	FNDACN
+	JR	SKIPLN		;invalid key name
+TSTACC:	LD	DE,ACCNAM
+	CALL	TSTPAR
+	LD	DE,WLICTL	;restore
+	JR	NZ,SKIPLN	;invalid key name
+	JR	RDACSK		;skip rest of line!
+READAC:	CALL	TSTLNE
+	JP	C,NACFND	;EOF: test current acc.!
+	JR	Z,READAC	;EOL
+	AND	7FH
+	CP	' '+1
+	JR	C,RDACSK	;CTRL/SPC
+	CP	';'
+	JR	Z,RDACSK
+	CP	'['
+	JP	Z,NACFND	;next key start found
+	AND	5FH		;uppercase
+	CP	'N'
+	JR	Z,PFOUND	;name/net found
+	CP	'M'
+	JR	Z,PFOUND	;mac found
+RDACSK:	CALL	SKIPEN
+	JP	C,NACFND	;EOF: test current acc.!
+	JR	READAC
+PFOUND:	PUSH	IY
+	CALL	FY$UNGET##	;return last char
+	POP	IY
+	LD	B,ACCBLG
+	LD	HL,ACCBUF
+PFOACN:	CALL	TSTLNE
+	JP	C,NACFND	;EOF: test current acc.!
+	JR	Z,READAC	;EOL
+	AND	7FH
+	CALL	ISALPHA##	;A-Z or a-z?
+	JR	NZ,PFOACL	;no
+	AND	5FH		;uppercase
+PFOACL:	LD	(HL),A
+	INC	HL
+	CP	'='
+	JR	Z,TSTPRM	;param. stop found
+	DJNZ	PFOACN
+	JR	RDACSK		;invalid param. name
+TSTPRM:	LD	DE,ACPNAM
+	CALL	TSTPAR
+	LD	IY,PRSNAM
+	JR	Z,LSBPRM
+	LD	DE,ACPMAC
+	CALL	TSTPAR
+	LD	IY,PRSMAC
+	JR	Z,LSBPRM
+	LD	DE,ACPNET
+	CALL	TSTPAR
+	LD	IY,PRSNET
+	JR	Z,LSBPRM
+	LD	DE,WLICTL	;restore
+	JR	RDACSK		;invalid param. name
+LSBPRM:	LD	B,PARBLG
+	LD	HL,PARBUF
+	LD	(HL),0		;clear content!
+	LD	DE,WLICTL	;restore
+LSBPRN:	CALL	TSTLNE
+	JR	C,LSBPRK	;EOF
+	JR	Z,LSBPRT	;EOL
+	AND	7FH
+	CP	' '+1
+	JR	C,LSBPLE	;CTRL/SPC
+	CALL	ISALPHA##	;A-Z or a-z?
+	JR	NZ,LSBPRC	;no
+	AND	5FH		;uppercase 
+LSBPRC:	LD	(HL),A
+	INC	HL
+	LD	(HL),0		;terminate like zstring!
+	DJNZ	LSBPRN
+LSBPLE:	CALL	SKIPEN
+	JR	NC,LSBPRT
+LSBPRK:	PUSH	IY
+	CALL	FY$UNGET##	;return last char
+	POP	IY
+LSBPRT:	LD	HL,PARBUF
+	CALL	LSBRCL		;copy valid value only!
+	LD	DE,WLICTL	;restore
+	JP	READAC		;next line
+LSBRCL:	JP	(IY)		;like CALL (IY)	
+NACFND:	PUSH	IY
+	CALL	FY$UNGET##	;return last char
+	POP	IY
+	XOR	A
+	LD	HL,W_NAME
+	CP	(HL)
+	JP	Z,ACLOAD	;acc. name invalid
+	LD	HL,W_MAC
+	CALL	CPA6BT
+	JP	Z,ACLOAD	;acc. MAC invalid
+TSAVOK:	LD	HL,ACICNT
+	INC	(HL)		;InCounter+1
+	OR	A		;valid acc. found
+	RET
+	;test key/param.
+TSTPAR:	LD	A,(DE)
+	LD	C,A
+	LD	B,0		;BC=length
+	INC	DE
+	LD	HL,ACCBUF
+TSTPAL:	LD	A,(DE)
+	INC	DE
+	CPI
+	RET	NZ
+	JP	PE,TSTPAL
+	RET			;Z=1: found
+	;skip rest of line
+SKIPEN:	CALL	TSTLNE
+	RET	C		;EOF
+	JR	NZ,SKIPEN	;search EOL
+	RET			;EOL
+	;test EOL: CY=1-EOF / Z=1-EOL
+TSTLNE:	PUSH	IY
+	CALL	FY$GET##	;next byte in A
+	POP	IY
+	SCF
+	RET	Z		;EOF
+	CP	CR
+	JR	NZ,SKIPNE
+	PUSH	IY
+	CALL	FY$GET##
+	POP	IY
+	SCF
+	RET	Z		;EOF
+	CP	LF
+	RET	Z		;Z=1: EOL WIN/CPM
+	PUSH	IY
+	CALL	FY$UNGET##
+	POP	IY
+	XOR	A		;Z=1: EOL MAC
+	RET
+SKIPNE:	CP	LF
+	SCF
+	CCF
+	RET			;Z=1: EOL UNIX
+;### make & send UDP-WOL packets without ARP ############
+WOLSND:	;load Directed Broadcast IP address to W_PEER
+	LD	HL,W_IP		;local or other network
+	LD	DE,W_MASK	;network mask
+	LD	BC,W_PEER	;Peer IP
+	LD	A,4
+WOLSN1:	PUSH	AF
+	LD	A,(DE)
+	CPL
+	OR	(HL)
+	LD	(BC),A		;load Peer IP
+	INC	HL
+	INC	DE
+	INC	BC
+	POP	AF
+	DEC	A
+	JR	NZ,WOLSN1
+	;copy destination MAC
+	LD	B,16
+	LD	HL,W_MAC	;destination MAC
+	LD	DE,WLPCKM	;WOL packet MAC
+WOLSN2:	PUSH	HL
+	PUSH	BC
+	LD	BC,6
+	LDIR
+	POP	BC
+	POP	HL
+	DJNZ	WOLSN2
+	;info out
+	LD	DE,WL_SND
+	CALL	ZKOUT
+	LD	A,(WLSTAT)
+	BIT	2,A
+	JR	Z,WOLSN4	;full OFF
+	LD	A,'('
+	CALL	COUT##
+	LD	HL,W_MAC
+	CALL	MACOUT		;MAC
+	XOR	A
+	CP	(HL)
+	JR	Z,WOLSN3	;no net
+	LD	A,' '
+	CALL	COUT##
+	LD	HL,W_PEER
+	CALL	IPOUT		;net
+WOLSN3:	LD	A,')'
+	CALL	COUT##
+	LD	A,' '
+	CALL	COUT##
+WOLSN4:	;send 3 WOL packets
+	LD	B,3
+WOLSN5:	PUSH	BC
+	CALL	STWATS
+	POP	BC
+	RET	C
+	DJNZ	WOLSN5
+	RET
+STWATS:	LD	A,'.'
+	CALL	COUT##
+	LD	A,(W_SCK)	;Socket
+	LD	HL,W_MAC
+	CALL	N_SSDMC		;set socket destination MAC
+	LD	HL,W_PEER	;Peer Data
+	CALL	N_SSDIP		;set IP
+	CALL	N_SSDPT		;set Port
+	LD	HL,WLPCKB	;Data
+	LD	BC,WLPCKL	;WOL message length
+	CALL	N_SDDT		;Data (HL+(BC)) -> TXMBUF
+	LD	E,SCR_SMAC	;Send data to MAC address without ARP process
+	CALL	N_SSCD		;send Data
+STWAT1:	CALL	N_GSIS		;Socket INT-State
+	LD	D,A
+	LD	A,SIR_SENDOK
+	AND	E
+	JR	NZ,STWAT3	;OK
+	LD	A,SIR_TIMEOUT
+	AND	E
+	JR	NZ,STWAT2	;Timeout
+	LD	A,D
+	CALL	N_GSST		;Socket State
+	LD	A,S_CLOSED
+	CP	E
+	LD	A,D
+	JR	NZ,STWAT1
+	;Socket closed 
+STWAT2:	LD	A,SIR_SENDOK OR SIR_TIMEOUT OR SIR_RECV OR SIR_DISCON OR SIR_CON
+	CALL	STWAT4
+	SCF			;Error
+	RET
+STWAT3:	;Sent OK
+	LD	A,SIR_SENDOK
+STWAT4:	OR	E		;clear with '1'
+	LD	E,A
+	LD	A,D
+	CALL	N_SSIS
+	OR	A		;OK
+	RET
+;#######################################################
+;### WOL START #########################################
+;#######################################################
+	;check for CP/M
+BEGIN:	LD	C,CPMVER
+	CALL	BDOS
+	LD	(SYSVER),A	;CP/M version
+	AND	0F0H		;version 2+ required
+	CP	20H
+	LD	DE,CPMERR
+	CALL	C,ZKOUT
+	JP	C,W_QUIT
+	LD	SP,STACK	;set local stack
+	CALL	PUTUD##		;save away DU:
+	CALL	RETUD##
+	LD	(WLI_DU),BC	;get current DU:
+	;	parse and test ARG's:
+	;
+	;because Network Hardware-Driver is not initialized
+	; here, do not call hardware-related API functions,
+	;    only functions for CONVERSION are allowed!
+	;
+	XOR	A
+	LD	(WLSTAT),A	;reset state
+	CALL	CLRVAL		;clear value buffer
+	LD	HL,DMA+1
+	LD	DE,ARGMAX	;ARG-Table
+	XOR	A
+	INC	A		;terminate Parameter with 0 
+	CALL	ARGV##		;parse ARG's
+	LD	A,(ARGN)
+	CP	5+1		;max. 5 Parameter
+	JR	C,WOLNCN
+	LD	DE,W_CMXA	;too many ARG's
+ETXOUT:	CALL	ZKOUT
+	JP	W_ENDE
+WOLNCN:	OR	A
+	JP	Z,W_OEND	;no arg's -> skip parser
+;------ parse command ----------------------------------
+	LD	HL,TARG1	;address of ARG-PTR tab
+	LD	(TEMP),HL
+	CALL	GETARG		;get first ARG address
+	JR	WOLNC4
+WOLNC3:	CALL	CNTARG		;count & get next ARG
+	JP	Z,W_OEND	;all ARG's parsed
+WOLNC4:	LD	A,'-'
+	CP	(HL)
+	JR	NZ,W_KEYF	;no option
+	INC	HL
+	LD	C,(HL)		;option char
+	INC	HL
+	;test option
+WOLNC5:	XOR	A
+	OR	C		;string end?
+	JR	Z,WOLNC3	;next ARG
+	EX	DE,HL
+	LD	HL,WLSTAT
+	AND	0DFH		;UCASE
+	CP	'V'		;version
+	JR	NZ,W_OST1
+	SET	1,(HL)
+W_OST1:	CP	'H'		;help
+	JR	NZ,W_OST2
+	SET	0,(HL)
+W_OST2:	CP	'F'		;full
+	JR	NZ,W_OST3
+	SET	2,(HL)
+W_OST3:	EX	DE,HL
+	LD	C,(HL)		;next char
+	INC	HL
+	JR	WOLNC5		;next option
+W_KEYF:	;test parameter: HL=PTR
+	LD	E,L
+	LD	D,H
+	LD	BC,0
+W_KEYW:	LD	A,(DE)
+	INC	DE
+	AND	07FH
+	CP	':'
+	JR	NZ,W_KEY1
+	INC	C		;count ":"
+W_KEY1:	CP	'/'
+	JR	NZ,W_KEY2
+	INC	B		;count "/"
+W_KEY2:	OR	A		;string end ?
+	JR	NZ,W_KEYW	;no
+	LD	(COLCNT),BC
+	CALL	TSTMAC
+	JR	NC,WOLNC3	;next arg
+	CALL	TSTIPM
+	JR	NC,WOLNC3	;next arg
+	CALL	TSTNAM
+	JR	WOLNC3		;next arg
+TSTMAC:	;test & convert MAC
+	LD	A,(WLSTAT)
+	AND	00011000B	;MAC or name cmdline ON ?
+	SCF
+	RET	NZ		;yes
+	LD	A,(COLCNT)
+	CP	5		;MAC string ?
+	SCF
+	RET	NZ		;no
+	CALL	PRSMAC		;parse MAC-string
+	CALL	C,ZKOUT		;preserves CY
+	RET	C
+	LD	HL,WLSTAT
+	SET	3,(HL)		;MAC cmdline ON
+	RET
+TSTIPM:	;test & convert net
+	LD	A,(WLSTAT)
+	BIT	3,A		;MAC cmdline ON ?
+	SCF
+	RET	Z		;no
+	LD	A,(COLCNT)
+	OR	A		;without ":" ?
+	SCF
+	RET	NZ		;no
+	LD	A,(COLCNT+1)
+	DEC	A		;one "/" ?
+	SCF
+	RET	NZ		;no
+	CALL	PRSNET
+	CALL	C,ZKOUT		;preserves CY
+	RET
+TSTNAM:	;test & copy name
+	LD	A,(WLSTAT)
+	BIT	3,A		;MAC cmdline ON ?
+	RET	NZ		;yes
+	;invalid ip/mask or MAC ?
+	LD	A,(COLCNT+1)
+	CP	1
+	SCF
+	RET	Z		;yes -> no message
+	LD	A,(COLCNT)
+	CP	5
+	SCF
+	RET	Z		;yes -> no message
+	CP	1
+	JR	NZ,TSTNMC
+	;try DIR/DU: and inc. PTR
+	CALL	TSTDIR
+	CALL	C,TSTDRU
+	CALL	C,ZKOUT		;preserves CY
+	RET	C
+TSTNMC:	CALL	PRSNAM
+	CALL	C,ZKOUT		;preserves CY
+	RET	C
+	LD	HL,WLSTAT
+	SET	4,(HL)		;name cmdline ON
+	RET
+;------ command parsed -> execute ----------------------
+W_OEND:	LD	HL,WLSTAT	;state
+	BIT	0,(HL)
+	LD	DE,WL_HLP
+	JP	NZ,ETXOUT	;show Help and exit
+	BIT	1,(HL)
+	CALL	NZ,WL_VER	;show Version
+	JP	NZ,W_NLEN	;and exit
+;-------init and test Network --------------------------
+	;try Network init
+	XOR	A		;DRV->KOP (required only for KC85)
+	CALL	N_INIT
+	CALL	C,ZKOUT		;->DE=ERR-string
+	CALL	C,NEWLN
+	LD	DE,WLVER2
+	JP	C,ETXOUT	;show "-h" and exit
+	;network available
+	CALL	NETTST		;configured?
+	JP	C,W_ENDE
+	CALL	ONTEST		;online?
+	JP	C,W_ENDE
+	LD	HL,WLSTAT	;state	
+	BIT	3,(HL)
+	JP	NZ,WPSEND	;MAC cmdline ON -> sendto
+;------ allocate memory --------------------------------
+	XOR	A		;free TPA
+	CALL	IALLOC##
+	LD	DE,WLIREC*128	;file buffer
+	CALL	ALLOC##
+	LD	DE,W_CMXD	;no TPA
+	JP	Z,ETXOUT
+	LD	(WLIBUF),HL
+	LD	DE,A_CLGT*9	;account output buffer
+	CALL	ALLOC##
+	LD	DE,W_CMXD	;no TPA
+	JP	Z,ETXOUT
+	LD	(A_CBUF),HL	;set address
+	XOR	A
+	LD	(ACICNT),A	;reset InCounter
+;------ open WOL.INI -----------------------------------
+	PUSH	IY
+	LD	BC,(WLI_DU)
+	CALL	LOGUD##
+	LD	DE,WLICTL
+	CALL	FYI$OPEN##
+	LD	DE,W_CMXE	;[DU:]WOL.INI not found
+	POP	IY
+	JP	Z,ETXOUT
+	LD	HL,WLSTAT
+	SET	7,(HL)		;WOL.INI opened
+	BIT	4,(HL)
+	JR	Z,W_LIST	;Name cmdline OFF -> list acc's
+;------ search cmdline Name in WOL.INI -----------------
+	LD	HL,W_NAME
+	LD	DE,W_TNAM
+	LD	BC,16
+	LDIR			;copy name for compare
+W_ALNX:	CALL	ACLOAD		;load (next) acc.
+	JR	C,W_ATST	;no (more) acc's
+	LD	A,1
+	LD	(ACICNT),A	;don't count up!
+	LD	HL,W_NAME	;acc. name
+	LD	DE,W_TNAM	;cmdline name
+W_ATSN:	LD	A,(DE)
+	INC	DE
+	CPI			;compare
+	JR	NZ,W_ALNX	;<> -> load next acc.
+	OR	A
+	JR	NZ,W_ATSN	;next char
+	;acc. name found
+	XOR	A
+	LD	HL,W_IP
+	CALL	CPA4BT		;acc. with net? 
+	CALL	Z,NETTST	;no -> reload local settings
+	JP	WPSEND		;sendto
+W_ATST:	LD	HL,ACICNT
+	LD	A,(HL)
+	OR	A
+	LD	DE,W_CMXF	;no acc's found
+	JP	Z,ETXOUT
+	LD	(HL),0		;clear InCounter
+	LD	DE,W_CMXG	;Acc.
+	CALL	ZKOUT
+	LD	DE,W_TNAM	;cmdline name
+	CALL	ZKOUT
+	LD	DE,W_CMXH	;not found in WOL.INI
+	CALL	ZKOUT
+	CALL	NEWLN
+	PUSH	IY
+	LD	DE,WLICTL
+	CALL	FYI$CLOSE##
+	CALL	FYI$OPEN##	;reopen WOL.INI
+	POP	IY
+;------ select account from WOL.INI --------------------
+W_LIST:	CALL	ACLOAD		;preload first acc.
+	JR	NC,W_LISR
+	LD	DE,W_CMXF	;no acc's found
+	JP	Z,ETXOUT
+W_LISR:	;header out
+	CALL	NEWLN
+	LD	DE,WL_HDR
+	CALL	ZKOUT
+	;reset acc. structure buffer
+	LD	HL,(A_CBUF)
+	LD	(ACCPTR),HL	;pointer
+	LD	BC,A_CLGT*9
+	CALL	CLRMEM		;buffer content
+	XOR	A
+	LD	(ACCCNT),A	;acc. #
+W_LISC:	;copy current acc. to structure buffer
+	LD	DE,(ACCPTR)
+	LD	A,(ACCCNT)
+	INC	A
+	LD	(ACCCNT),A
+	LD	(DE),A		;1...9
+	INC	DE
+	LD	HL,W_NAME
+	LD	BC,W_BFLG
+	LDIR			;name/MAC/net
+	LD	(ACCPTR),DE
+	LD	HL,ACICNT
+	DEC	(HL)		;quit: InCounter-1
+	CALL	ACLOAD		;preload next acc.
+	JR	C,W_LACC
+	LD	A,(ACCCNT)
+	CP	9
+	JR	NZ,W_LISC	;list max. 9 acc's
+W_LACC:	;list copied acc's
+	LD	HL,(A_CBUF)	;pointer first acc.
+	LD	A,(ACCCNT)
+	LD	B,A
+W_LACN:	LD	A,' '
+	CALL	COUT##
+	LD	A,'>'
+	CALL	COUT##
+	LD	A,'0'
+	ADD	A,(HL)
+	CALL	COUT##
+	LD	A,'<'
+	CALL	COUT##
+	LD	A,' '
+	CALL	COUT##
+	INC	HL
+	LD	E,L
+	LD	D,H
+	CALL	ZKOUT		;name
+	LD	DE,16
+	ADD	HL,DE
+	LD	A,(WLSTAT)
+	BIT	2,A
+	LD	DE,6+4+4
+	JR	Z,W_LACO	;full OFF
+	LD	A,' '
+	CALL	COUT##
+	CALL	COUT##
+	CALL	MACOUT		;MAC (6)
+	XOR	A
+	CP	(HL)		;acc. with net? 
+	JR	Z,W_LACS	;no -> skip
+	PUSH	HL
+	LD	A,' '
+	CALL	COUT##
+	CALL	IPOUT		;ip (4)
+	LD	A,'/'
+	CALL	COUT##
+	CALL	IPOUT		;mask (4)
+	POP	HL
+W_LACS:	LD	DE,8
+W_LACO:	ADD	HL,DE
+	CALL	NEWLN
+	DJNZ	W_LACN
+	; (.. more) and footer out
+	LD	A,(ACICNT)
+	OR	A
+	LD	DE,WL_MOR
+	CALL	NZ,ZKOUT
+	CALL	NEWLN
+	LD	DE,WL_FTR
+	CALL	ZKOUT
+WOLCTR:	;select acc. loop
+	LD	A,BEEP
+	CALL	COUT##
+W_LOOP:	INPUT			;macro
+	CP	ETX
+	JP	Z,W_ENDE	;break
+	CP	ESC
+	JP	Z,W_ENDE	;break
+	CP	'1'
+	JR	C,WOLCTR	;< 1
+	CP	'9'+1
+	JR	C,WPSTST	;'1'...'9'
+	AND	0DFH		;uppercase
+	CP	'M'
+	JR	NZ,WOLCTR
+	;more ?
+	LD	E,A
+	LD	A,(ACICNT)
+	OR	A
+	JR	Z,WOLCTR	;no acc. pending
+	LD	A,E
+	CALL	COUT##
+	CALL	NEWLN
+	JP	W_LISR		;next page
+WPSTST:	;test acc. # and send packet
+	LD	C,A
+	SUB	'0'
+	LD	B,A
+	LD	A,(ACCCNT)
+	CP	B
+	JR	C,WOLCTR	;acc.-number > acc's
+	LD	A,C
+	CALL	COUT##
+	LD	HL,(A_CBUF)	;pointer first acc.
+	LD	DE,A_CLGT
+	OR	A
+	SBC	HL,DE
+WPSTSW:	ADD	HL,DE
+	DJNZ	WPSTSW
+	INC	HL		;skip #
+	LD	DE,W_NAME
+	LD	BC,W_BFLG
+	LDIR			;copy acc. to value buffer
+	CALL	NEWLN
+WPSEND:	;get&open UDP socket
+	LD	A,0FFH		;any
+	LD	D,SK_DGRAM	;Mode
+	LD	E,0		;Flags
+	CALL	SOCKET
+	LD	DE,W_CMXB	;socket-error
+	CALL	C,ZKOUT
+	JR	C,W_ENDE
+	LD	(W_SCK),A
+	CALL	CONNECT
+	LD	DE,W_CMXC	;open-error
+	CALL	C,ZKOUT
+	JR	C,WSCEND	;close
+	CALL	WOLSND		;make & sendto WOL-packets
+	LD	DE,WL_SER
+	CALL	C,ZKOUT
+	LD	DE,WL_SOK
+	CALL	NC,ZKOUT
+WSCEND:	LD	A,(W_SCK)
+	CALL	CLOSE		;release Socket
+W_ENDE:	;WOL Quit
+	LD	HL,WLSTAT
+	BIT	7,(HL)		;WOL.INI opened ?
+	PUSH	IY
+	LD	DE,WLICTL
+	CALL	NZ,FYI$CLOSE##	;close
+	POP	IY
+W_NLEN:	CALL	NEWLN		;always NEWLN
+	CALL	GETUD##		;restore saved DU:	
+W_QUIT:	LD	C,0		;go to CP/M
+	CALL	BDOS		;don't JUMP (gives an
+				;Error with Z-System)
+;****** local Stack ************************************
+	DS	128,0		;depth = 64
+STACK	EQU	$
+;*******************************************************
+EEMAIN	EQU	$		;last ADR main program
+;****** Code-End ***************************************
+
+IF2        
+	.PRINTX "WOLxx.COM"
+	.RADIX  16
+        PRMSG   <KCN-INC LENGTH:>,%(AAMAIN-103H)
+        PRMSG   <    MAIN BEGIN:>,%AAMAIN
+        PRMSG   <   MAIN LENGTH:>,%(EEMAIN-AAMAIN)
+        PRMSG   <  LAST ADDRESS:>,%EEMAIN
+        PRMSG   <PROGRAM LENGTH:>,%(EEMAIN-100H)
+	.RADIX  10
+ENDIF
+	.DEPHASE
+	END
