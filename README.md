@@ -5,9 +5,10 @@ KCNet TCP/IP utilities for CP/M running on Amstrad CPC equipped with Net4CPC Eth
 </br>
 # Notes
 In order to build the binaries from the sources you will need:
-- a CP/M system
+- a CP/M system with SUBMIT.COM
 - the [SYSLIB library](http://cpmarchives.classiccmp.org/cpm/Software/WalnutCD/zsys/simtel20/syslib/syslib.lbr)
 - the Microsoft Macro-assembler-80 ([M80.COM](http://www.retroarchive.org/cpm/lang/MASM-80.ZIP)) and Linker-80 ([L80.COM](http://www.retroarchive.org/cpm/lang/MASM-80.ZIP))
+- the [MLOAD.COM](http://cpmarchives.classiccmp.org/cpm/Software/WalnutCD/zsys/znode-12/i/mload25.com) HEX file loader.
 </br>
 # License
 © Copyright 2023 by susowa</br>
