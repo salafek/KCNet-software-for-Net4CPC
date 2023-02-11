@@ -1,5 +1,5 @@
 # KCNet-software-for-Net4CPC
-KCNet TCP/IP utilities for CP/M running on Amstrad CPC equipped with [Net4CPC](https://github.com/salafek/Net4CPC) Ethernet interface (or [Cyboard](https://github.com/salafek/cyboard-for-cpc)).</br>
+KCNet TCP/IP utilities for CP/M running on Amstrad CPC equipped with [Net4CPC](https://github.com/salafek/Net4CPC) Ethernet interface or [Cyboard](https://github.com/salafek/cyboard-for-cpc).</br>
 </br>
 **This project is a port of the [KCNet](http://kc85.info/index.php/kcnet-75.html) software published here with the kind permission of the author: [susowa](http://kc85.info/index.php/kontakt-topmenu.html)** </br>
 </br>
