@@ -2,8 +2,7 @@
 ;	Kommando-Script FTP.COM  ( KCNet CP/M 2+ )
 ;************************************************************
 
-OPEN susowa.homeftp.net
+OPEN kc85.info
 USER anonymous
 
 MDIR
-
