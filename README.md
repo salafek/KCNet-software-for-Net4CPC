@@ -8,7 +8,7 @@ In order to build the binaries from the sources you will need:
 - a CP/M system with SUBMIT.COM
 - the [SYSLIB library](http://cpmarchives.classiccmp.org/cpm/Software/WalnutCD/zsys/simtel20/syslib/syslib.lbr)
 - the Microsoft Macro-assembler-80 ([M80.COM](http://www.retroarchive.org/cpm/lang/MASM-80.ZIP)) and Linker-80 ([L80.COM](http://www.retroarchive.org/cpm/lang/MASM-80.ZIP))
-- the [MLOAD.COM](http://cpmarchives.classiccmp.org/cpm/Software/WalnutCD/zsys/znode-12/i/mload25.com) HEX file loader.</br>
+- the [MLOAD.COM](http://cpmarchives.classiccmp.org/cpm/Software/WalnutCD/zsys/znode-12/i/mload25.com) HEX file loader and linker.</br>
 
 Run MAKE-MS.SUB to compile the KCNet utilities.</br>
 Run KERMIT14.SUB to compile the KERMIT client.</br>
