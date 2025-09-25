@@ -7,10 +7,14 @@
 ;		 WIZnet TCP/IP-Stack 
 ;		###  d_kef 2020  ###
 ;
-;  Name		: KCN-W51.INC
+;  Name		: N4C-W51.INC
 ;  Date		: 18.08.2020
 ;  Modified	: 09.10.2021
 ;		: 25.11.2022
+;		: 09.09.2025	use of WS5100S PPPoE HW Address register for
+;				storing DNS IP Address and last used IP port
+;				fixed a bug in the check for MAC Address
+;				assignment		
 ;  Hardware	: Net4CPC - W5100S
 ;
 ;*******************************************************
@@ -19,7 +23,7 @@
 ;### Declarations ######################################
 ;#######################################################
 	;
-	;### 4 contiguous W5100s I/O-Addresses ###
+	;### 4 continuous W5100s I/O-Addresses ###
 W51MR	EQU	W51ADDR	; W5100S-address from KCNET.INC
 W51HAD	EQU	W51MR + 1
 W51LAD	EQU	W51MR + 2
@@ -29,9 +33,14 @@ W51OK	EQU	3	; W5100S init ok value
 
 W51MRH	EQU	HIGH W51MR
 W51MRL	EQU	LOW W51MR
+	; Destination Hardware Address on PPoE register
+	; is used to store DNS server IP Address 
+W51DNS	EQU	0032H
 	;
+IF	CKMAC
 	;W5100S MAC Address
 W51MAC:	DB 0DEH, 0ADH, 0BEH, 0EFH, 00H, 00H
+ENDIF
 D_ADR1: DB 00, 00, 00, 00
 D_ADR2: DB 00, 00, 00, 00
 D_ADR3: DB 00, 00, 00, 00
@@ -127,20 +136,18 @@ NEXTH:	PUSH	DE
 	LD	A,E
 	CALL	HEX1
 	OR	D
-	JR	NEXTHC
+	POP	DE
+	LD	(DE),A
+	INC	DE
+	DJNZ	NEXTH
+        JP      INITOK          ;exit
+;
 HEX1:	SUB	'0'
 	CP	10
 	RET	C
 	SUB	'A'-'0'-10
 	RET
-;
-NEXTHC:
-	POP	DE
-	LD	(DE),A
-	INC	DE
-	DJNZ	NEXTH
-;
-        JP      INITOK          ;exit
+
 WRINI:  CALL	RND##
 	LD	(W51MAC+4),A
 	LD	DE,MACADD+8
@@ -178,10 +185,12 @@ MACERR:	DB	CR,LF,'Could not assign MAC Address !',BEEP,'$'
 ENDIF
 INITOK:
 	;Init OK
+IF	CKMAC
 	LD	HL,W51MAC	;write MAC Adress to W5100S
 	LD	DE,N_MAC0
 	LD	BC,6
 	CALL	L_WRBF
+ENDIF
 	LD	HL,L_FTAB
 	LD	DE,N_WRBF
 	LD	BC,N_VTABL
@@ -393,30 +402,13 @@ L_RDB3:
 L_WIPA:	PUSH	DE
 	PUSH	BC
 	PUSH	AF
-	LD	DE,0050H
+	; Dest. Hw Address on PPoE is used to store DNS server IP Address 
+	LD	DE,W51DNS
 	LD	BC,4
 	CALL	L_WRBF
 	POP	AF
 	POP	BC
 	POP	DE
-	RET
-	PUSH	BC
-	PUSH	AF
-	PUSH	DE
-	PUSH	HL
-	LD	D,0
-	ADD	A,A
-	ADD	A,A
-	LD	E,A
-	LD	HL,D_ADR1
-	ADD	HL,DE
-	EX	DE,HL
-	POP	HL
-	LD	BC,4
-	LDIR
-	POP	DE
-	POP	AF
-	POP	BC
 	RET
 
 	;### READ IP-ADDRESS ###
@@ -427,33 +419,13 @@ L_WIPA:	PUSH	DE
 L_RIPA:	PUSH	DE
 	PUSH	BC
 	PUSH	AF
-	LD	DE,0050H
+	; Dest. Hw Address on PPoE is used to store DNS server IP Address 
+	LD	DE,W51DNS
 	LD	BC,4
 	CALL	L_RDBF
 	POP	AF
 	POP	BC
 	POP	DE
-	RET
-	PUSH	BC
-	PUSH	AF
-	PUSH	DE
-	PUSH	HL
-	LD	D,0
-	ADD	A,A
-	ADD	A,A
-	LD	E,A
-	LD	HL,D_ADR1
-	ADD	HL,DE
-	EX	DE,HL
-	POP	HL
-
-	EX	DE,HL
-	LD	BC,4
-	LDIR
-	EX	DE,HL
-	POP	DE
-	POP	AF
-	POP	BC
 	RET
 
 	;### READ INFO ###
@@ -491,7 +463,7 @@ L_SVER:	LD H,N_MAJOR	; dummy firmware version
 L_HVER:	PUSH	AF
 	PUSH	BC
 	LD	BC,W51HAD
-	LD	A,00H
+	XOR	A
 	OUT	(C),A
 	INC	C
 	LD	A,80H
@@ -519,7 +491,7 @@ L_HVER:	PUSH	AF
 L_LSTA:	PUSH	AF
 	PUSH	BC
 	LD	BC,W51HAD
-	LD	A,00H
+	XOR	A
 	OUT	(C),A
 	INC	C
 	LD	A,3CH
@@ -543,59 +515,54 @@ L_TIME:
 	PUSH	AF
 	PUSH	BC
 	LD	BC,W51HAD
-	LD	A,00H
+	XOR	A
 	OUT	(C),A
 	INC	C
 	LD	A,82H
 	OUT	(C),A
 	INC	C
-	IN	A,(C)
-	LD	H,A
-	IN	A,(C)
-	LD	L,A
+	IN	H,(C)
+	IN	L,(C)
 	LD	C,10	;convert W5100S timer from usec to msec
 	CALL	DIVHLC
 	POP	BC
 	POP	AF
 	RET
-;L_TIME:
-	push	af
-	push	bc
-	push	de
-	ld	hl,(1)	;get address of routine to call to execute a firmware function
-	ld	de,57h	;
-	add	hl,de
-	ld	(fw_jump+1),hl
-	call	fw_jump
-	dw	0bd0dh	;KL_TIME_PLEASE
-	pop	de
-	pop	bc
-	pop	af
-	ret
-fw_jump:		;execute a firmware function
-	jp	$-$
 
 L_MSEC:	DW	0
 
 	;### READ Dynamic PORT ###
 	;PI:	-
 	;PO:	HL - dynamic Port number NOrder!
-	;binary:16 Bit /  49152...65535
+	;binary:16 Bit /  49153...65535
 	;AR:	HL
 L_DPRT:	PUSH	AF
 	PUSH	BC
 	LD	BC,W51HAD
-	LD	A,00H
+	XOR	A
 	OUT	(C),A
 	INC	C
-	LD	A,82H
+	; Dest. Hw Address on PPoE is used to store the last used port
+	LD	A,36H	; 
 	OUT	(C),A
 	INC	C
-	IN	A,(C)	; read timer
+	IN	A,(C)	; read port
 	OR	0C0H	; make it >= 49152
-	LD	L,A
-	IN	A,(C)
 	LD	H,A
+	IN	L,(C)
+	INC	HL	; get next port
+	LD	BC,W51HAD
+	XOR	A
+	OUT	(C),A
+	INC	C
+	LD	A,36H	; 
+	OUT	(C),A
+	INC	C
+	OUT	(C),H	; store the port nr
+	OUT	(C),L
+	LD	A,H	; make it NOrder
+	LD	H,L
+	LD	L,A
 	POP	BC
 	POP	AF
 	RET
@@ -610,8 +577,9 @@ L_CERR:	LD	HL,0000H	; no command error
 
 	;### 16bit / 8bit division ###
 	;divides hl by c and places the quotient in hl and the remainder in a
-	;PI:
-	;PO:
+	;PI:	HL - dividend, C - divisor
+	;PO:	HL - quotient, A - remainder
+	;AR:	AF, BC, HL
 DIVHLC:
 	XOR	A
 	LD	B, 16
