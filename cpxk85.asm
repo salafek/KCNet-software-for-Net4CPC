@@ -321,12 +321,6 @@ clrtop:	ld	de,outlin
 
 ;	sysxin - system dependent initialisation code, called from SYSINIT
 sysxin:
-;	xor	a		;allow IBM extended charset (>128)  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-;	ld	(3e0eh),a	;by removing the AND 7FH command
-;	ld	(3e0fh),a
-;	ld	(4e04h),a	;treat DEL as BS
-;	ld	(4e05h),a
-;	ld	(4e06h),a	
 	;check for CP/M 2+
 	LD	C,12		;get CP/M-Version
 	CALL	BDOS
