@@ -13,3 +13,6 @@
 m80 cpxtyp.rel=cpxtyp.asm
 l80 /p:7000,cpxtyp.rel,cpxtyp.hex/n/x/e
 mload KERMIT.COM=cpsker.hex,cpxtyp.hex
+erase cpxtyp.hex
+erase cpxtyp.rel
+
