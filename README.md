@@ -11,7 +11,8 @@ In order to build the binaries from the sources you will need:
 - the [MLOAD.COM](http://cpmarchives.classiccmp.org/cpm/Software/WalnutCD/zsys/znode-12/i/mload25.com) HEX file loader and linker.</br>
 
 Run MAKE-MS.SUB to compile the KCNet utilities.</br>
-Run KERMIT14.SUB to compile the KERMIT client.</br>
+Run KERMIT4N.SUB to compile the KERMIT client.</br>
+Run MAKE-ALL.SUB to compile the KCNet utilities and the KERMIT client.</br>
 
 # License notice
 © Copyright 2023 by susowa</br>
